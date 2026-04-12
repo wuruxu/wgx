@@ -1,0 +1,418 @@
+/* SPDX-License-Identifier: MIT
+ * SOCKS5 server – NO_AUTH, CONNECT only.
+ * State machine per client connection:
+ *   INIT → AUTH → (RESOLVING →) CONNECTING → ESTABLISHED → CLOSING
+ */
+#include "socks5.h"
+#include "wg.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+
+/* ---- SOCKS5 constants --------------------------------------------------- */
+#define S5_VER          5
+#define S5_AUTH_NONE    0
+#define S5_CMD_CONNECT  1
+#define S5_ATYP_IPV4    1
+#define S5_ATYP_DOMAIN  3
+#define S5_ATYP_IPV6    4
+#define S5_REP_OK       0
+#define S5_REP_FAIL     1
+#define S5_REP_NOCONN   5
+
+typedef enum {
+    S5_INIT = 0,
+    S5_AUTH,
+    S5_RESOLVING,
+    S5_CONNECTING,
+    S5_ESTABLISHED,
+    S5_CLOSING,
+} socks5_state_t;
+
+/* ---- Write request helper ------------------------------------------------ */
+typedef struct {
+    uv_write_t req;
+    /* flexible array for inline data */
+    uint8_t data[];
+} write_req_t;
+
+/* ---- Per-client connection state ---------------------------------------- */
+typedef struct socks5_conn {
+    uv_tcp_t       client;    /* libuv TCP handle toward curl */
+    tcp_conn_t    *wg_conn;   /* WireGuard TCP connection (NULL until connecting) */
+    socks5_state_t state;
+
+    /* Recv buffer for SOCKS5 handshake bytes */
+    uint8_t        rxbuf[512];
+    size_t         rxbuf_len;
+
+    uint32_t       target_ip;   /* NBO */
+    uint16_t       target_port; /* HBO */
+
+    /* Pending data from WG before ESTABLISHED reply is sent */
+    uint8_t       *pending_data;
+    size_t         pending_len;
+
+    tcpstack_t    *stack;
+    int            closing;
+} socks5_conn_t;
+
+/* ---- Forward declarations ----------------------------------------------- */
+static void socks5_conn_close(socks5_conn_t *sc);
+static void do_connect(socks5_conn_t *sc);
+static void client_read_established(socks5_conn_t *sc,
+                                     const uint8_t *data, size_t len);
+
+/* ---- Async write helpers ------------------------------------------------- */
+static void write_done_cb(uv_write_t *req, int status) {
+    write_req_t *wr = (write_req_t *)req;
+    if (status < 0) {
+        socks5_conn_t *sc = req->handle->data;
+        if (sc) socks5_conn_close(sc);
+    }
+    free(wr);
+}
+
+static void client_write(socks5_conn_t *sc,
+                          const uint8_t *data, size_t len) {
+    if (sc->closing || len == 0) return;
+    write_req_t *wr = malloc(sizeof(*wr) + len);
+    if (!wr) return;
+    memcpy(wr->data, data, len);
+    uv_buf_t buf = uv_buf_init((char *)wr->data, len);
+    int ret = uv_write(&wr->req, (uv_stream_t *)&sc->client, &buf, 1, write_done_cb);
+    if (ret < 0) {
+        free(wr);
+        socks5_conn_close(sc);
+    }
+}
+
+/* ---- Send SOCKS5 reply --------------------------------------------------- */
+static void send_reply(socks5_conn_t *sc, uint8_t rep) {
+    uint8_t reply[10] = {
+        S5_VER, rep, 0, S5_ATYP_IPV4,
+        0, 0, 0, 0,  /* bound addr 0.0.0.0 */
+        0, 0         /* bound port 0 */
+    };
+    client_write(sc, reply, sizeof(reply));
+}
+
+/* ---- WireGuard TCP callbacks -------------------------------------------- */
+static void wg_on_connect(tcp_conn_t *conn, int status) {
+    socks5_conn_t *sc = conn->userdata;
+    if (!sc || sc->closing) return;
+
+    if (status < 0) {
+        send_reply(sc, S5_REP_NOCONN);
+        socks5_conn_close(sc);
+        return;
+    }
+
+    sc->state = S5_ESTABLISHED;
+    send_reply(sc, S5_REP_OK);
+
+    /* Flush any pending data buffered before connection */
+    if (sc->pending_data && sc->pending_len) {
+        tcp_send(conn, sc->pending_data, sc->pending_len);
+        free(sc->pending_data);
+        sc->pending_data = NULL;
+        sc->pending_len  = 0;
+    }
+}
+
+static void wg_on_data(tcp_conn_t *conn, const uint8_t *data, size_t len) {
+    socks5_conn_t *sc = conn->userdata;
+    if (!sc || sc->closing) return;
+    client_write(sc, data, len);
+}
+
+static void wg_on_close(tcp_conn_t *conn) {
+    socks5_conn_t *sc = conn->userdata;
+    if (sc) {
+        sc->wg_conn = NULL;
+        socks5_conn_close(sc);
+    }
+}
+
+/* ---- Connection close --------------------------------------------------- */
+static void client_close_cb(uv_handle_t *h) {
+    socks5_conn_t *sc = h->data;
+    if (sc->wg_conn) {
+        sc->wg_conn->userdata = NULL;
+        tcp_close(sc->wg_conn);
+        sc->wg_conn = NULL;
+    }
+    free(sc->pending_data);
+    free(sc);
+}
+
+static void socks5_conn_close(socks5_conn_t *sc) {
+    if (sc->closing) return;
+    sc->closing = 1;
+
+    if (sc->wg_conn) {
+        sc->wg_conn->userdata = NULL;
+        tcp_close(sc->wg_conn);
+        sc->wg_conn = NULL;
+    }
+    free(sc->pending_data);
+    sc->pending_data = NULL;
+    sc->pending_len  = 0;
+
+    if (!uv_is_closing((uv_handle_t *)&sc->client)) {
+        uv_read_stop((uv_stream_t *)&sc->client);
+        uv_close((uv_handle_t *)&sc->client, client_close_cb);
+    }
+}
+
+/* ---- DNS resolution callback -------------------------------------------- */
+static void on_resolved(uv_getaddrinfo_t *req, int status,
+                         struct addrinfo *res) {
+    socks5_conn_t *sc = req->data;
+    free(req);
+
+    if (!sc || sc->closing) {
+        uv_freeaddrinfo(res);
+        return;
+    }
+
+    if (status < 0 || !res) {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        uv_freeaddrinfo(res);
+        return;
+    }
+
+    /* Pick first IPv4 result */
+    struct addrinfo *ai = res;
+    while (ai && ai->ai_family != AF_INET) ai = ai->ai_next;
+    if (!ai) {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        uv_freeaddrinfo(res);
+        return;
+    }
+
+    sc->target_ip = ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
+    uv_freeaddrinfo(res);
+
+    sc->state = S5_CONNECTING;
+    do_connect(sc);
+}
+
+/* ---- Initiate TCP connection to target ---------------------------------- */
+static void do_connect(socks5_conn_t *sc) {
+    sc->wg_conn = tcpstack_connect(sc->stack,
+                                    sc->target_ip,
+                                    sc->target_port,
+                                    wg_on_connect,
+                                    wg_on_data,
+                                    wg_on_close,
+                                    sc);
+    if (!sc->wg_conn) {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+    }
+}
+
+/* ---- SOCKS5 handshake parser -------------------------------------------- */
+static void process_auth_request(socks5_conn_t *sc) {
+    /* VER(1) NMETHODS(1) METHODS[NMETHODS] */
+    if (sc->rxbuf_len < 2) return;
+    uint8_t nmethods = sc->rxbuf[1];
+    if (sc->rxbuf_len < (size_t)(2 + nmethods)) return;
+
+    /* Accept: always reply NO_AUTH */
+    uint8_t resp[2] = { S5_VER, S5_AUTH_NONE };
+    client_write(sc, resp, 2);
+    sc->state = S5_AUTH;
+
+    /* Remove consumed bytes */
+    size_t consumed = 2 + nmethods;
+    sc->rxbuf_len -= consumed;
+    if (sc->rxbuf_len)
+        memmove(sc->rxbuf, sc->rxbuf + consumed, sc->rxbuf_len);
+}
+
+static void process_connect_request(socks5_conn_t *sc) {
+    /* VER(1) CMD(1) RSV(1) ATYP(1) ... */
+    if (sc->rxbuf_len < 4) return;
+    if (sc->rxbuf[0] != S5_VER || sc->rxbuf[1] != S5_CMD_CONNECT) {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        return;
+    }
+
+    uint8_t atyp = sc->rxbuf[3];
+    size_t  needed;
+    if (atyp == S5_ATYP_IPV4) {
+        needed = 4 + 4 + 2;
+    } else if (atyp == S5_ATYP_DOMAIN) {
+        if (sc->rxbuf_len < 5) return;
+        needed = 4 + 1 + sc->rxbuf[4] + 2;
+    } else if (atyp == S5_ATYP_IPV6) {
+        needed = 4 + 16 + 2;
+    } else {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        return;
+    }
+
+    if (sc->rxbuf_len < needed) return;
+
+    uint16_t port;
+    memcpy(&port, sc->rxbuf + needed - 2, 2);
+    sc->target_port = ntohs(port);
+
+    if (atyp == S5_ATYP_IPV4) {
+        memcpy(&sc->target_ip, sc->rxbuf + 4, 4); /* NBO */
+        sc->state = S5_CONNECTING;
+        do_connect(sc);
+
+    } else if (atyp == S5_ATYP_DOMAIN) {
+        uint8_t dlen = sc->rxbuf[4];
+        char domain[256];
+        memcpy(domain, sc->rxbuf + 5, dlen);
+        domain[dlen] = '\0';
+
+        sc->state = S5_RESOLVING;
+        uv_getaddrinfo_t *req = malloc(sizeof(*req));
+        if (!req) {
+            send_reply(sc, S5_REP_FAIL);
+            socks5_conn_close(sc);
+            return;
+        }
+        req->data = sc;
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        int ret = uv_getaddrinfo(sc->stack->loop, req, on_resolved,
+                                  domain, NULL, &hints);
+        if (ret < 0) {
+            free(req);
+            send_reply(sc, S5_REP_FAIL);
+            socks5_conn_close(sc);
+        }
+
+    } else {
+        /* IPv6 not supported */
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+    }
+}
+
+/* ---- Established mode data forwarding ----------------------------------- */
+static void client_read_established(socks5_conn_t *sc,
+                                     const uint8_t *data, size_t len) {
+    if (!sc->wg_conn) return;
+    if (sc->state == S5_CONNECTING) {
+        /* Buffer data until connection is up */
+        uint8_t *nb = realloc(sc->pending_data, sc->pending_len + len);
+        if (!nb) return;
+        memcpy(nb + sc->pending_len, data, len);
+        sc->pending_data = nb;
+        sc->pending_len += len;
+    } else if (sc->state == S5_ESTABLISHED) {
+        tcp_send(sc->wg_conn, data, len);
+    }
+}
+
+/* ---- libuv read callback ------------------------------------------------ */
+static void on_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf) {
+    (void)handle; (void)suggested;
+    buf->base = malloc(8192);
+    buf->len  = buf->base ? 8192 : 0;
+}
+
+static void on_client_read(uv_stream_t *stream, ssize_t nread,
+                             const uv_buf_t *buf) {
+    socks5_conn_t *sc = stream->data;
+
+    if (nread <= 0) {
+        free(buf->base);
+        if (nread != UV_EAGAIN) socks5_conn_close(sc);
+        return;
+    }
+
+    const uint8_t *data = (uint8_t *)buf->base;
+    size_t len = (size_t)nread;
+
+    if (sc->state == S5_ESTABLISHED || sc->state == S5_CONNECTING) {
+        client_read_established(sc, data, len);
+        free(buf->base);
+        return;
+    }
+
+    /* Buffer incoming handshake bytes */
+    size_t space = sizeof(sc->rxbuf) - sc->rxbuf_len;
+    if (len > space) len = space;
+    memcpy(sc->rxbuf + sc->rxbuf_len, data, len);
+    sc->rxbuf_len += len;
+    free(buf->base);
+
+    /* Dispatch based on current state */
+    if (sc->state == S5_INIT) {
+        process_auth_request(sc);
+        /* Fall through: if buffer has CONNECT request already */
+        if (sc->state == S5_AUTH && sc->rxbuf_len >= 4)
+            process_connect_request(sc);
+    } else if (sc->state == S5_AUTH) {
+        process_connect_request(sc);
+    }
+}
+
+/* ---- New client accepted ------------------------------------------------ */
+static void on_connection(uv_stream_t *server, int status) {
+    if (status < 0) return;
+    socks5_server_t *srv = server->data;
+
+    socks5_conn_t *sc = calloc(1, sizeof(*sc));
+    if (!sc) return;
+
+    sc->stack = srv->stack;
+    sc->state = S5_INIT;
+
+    uv_tcp_init(server->loop, &sc->client);
+    sc->client.data = sc;
+
+    if (uv_accept(server, (uv_stream_t *)&sc->client) != 0) {
+        uv_close((uv_handle_t *)&sc->client, (uv_close_cb)free);
+        free(sc);
+        return;
+    }
+
+    uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);
+}
+
+/* ---- Public API --------------------------------------------------------- */
+static void server_close_cb(uv_handle_t *h) { (void)h; }
+
+int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
+                  const char *bind_addr, uint16_t port) {
+    memset(srv, 0, sizeof(*srv));
+    srv->stack = stack;
+
+    uv_loop_t *loop = stack->loop;
+    uv_tcp_init(loop, &srv->listener);
+    srv->listener.data = srv;
+
+    struct sockaddr_in addr;
+    int ret = uv_ip4_addr(bind_addr, port, &addr);
+    if (ret < 0) return ret;
+
+    ret = uv_tcp_bind(&srv->listener, (const struct sockaddr *)&addr, 0);
+    if (ret < 0) return ret;
+
+    ret = uv_listen((uv_stream_t *)&srv->listener, 128, on_connection);
+    if (ret < 0) return ret;
+
+    fprintf(stderr, "SOCKS5 proxy listening on %s:%u\n", bind_addr, port);
+    return 0;
+}
+
+void socks5_stop(socks5_server_t *srv) {
+    if (!uv_is_closing((uv_handle_t *)&srv->listener))
+        uv_close((uv_handle_t *)&srv->listener, server_close_cb);
+}
