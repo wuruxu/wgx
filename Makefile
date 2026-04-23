@@ -45,7 +45,7 @@ LDFLAGS := \
 	-lrt \
 	-lm
 
-.PHONY: all clean
+.PHONY: all clean asan
 
 all: $(OBJDIR) $(TARGET)
 
@@ -61,6 +61,13 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
+
+asan:
+	$(MAKE) clean
+	$(MAKE) \
+		CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -O1 -g -fsanitize=address -fno-omit-frame-pointer -D_GNU_SOURCE -I$(SRCDIR)' \
+		LDFLAGS='-fsanitize=address -luv -lpthread -lssl -lcrypto -ldl -lrt -lm' \
+		all
 
 install: $(TARGET)
 	install -m 0755 $(TARGET) /usr/bin/

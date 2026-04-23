@@ -242,6 +242,7 @@ typedef struct wg_device {
 
     /* UAPI socket path */
     char                uapi_path[108];
+    int                 uapi_fd;
 
     /* Precomputed Noise init values */
     uint8_t             noise_init_chain_key[WG_HASH_LEN];  /* BLAKE2s(NOISE_CONSTRUCTION) */

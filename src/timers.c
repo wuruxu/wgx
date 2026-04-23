@@ -63,8 +63,7 @@ static void cb_zero_key_material(uv_timer_t *handle) {
 
     pthread_mutex_lock(&peer->handshake.mutex);
     index_table_delete(&dev->index_table, peer->handshake.local_index);
-    wg_memzero(&peer->handshake, sizeof(peer->handshake));
-    peer->handshake.state = HS_ZEROED;
+    noise_handshake_clear(&peer->handshake);
     pthread_mutex_unlock(&peer->handshake.mutex);
 }
 

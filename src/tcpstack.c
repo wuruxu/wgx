@@ -15,6 +15,14 @@ static inline int seq_lt(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; 
 static inline int seq_le(uint32_t a, uint32_t b) { return (int32_t)(a - b) <= 0; }
 static inline int seq_gt(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
 
+static uint32_t conn_hash(uint32_t local_ip, uint32_t remote_ip,
+                          uint16_t local_port, uint16_t remote_port) {
+    uint32_t h = local_ip ^ remote_ip ^
+                 ((uint32_t)local_port << 16) ^ remote_port;
+    h ^= h >> 16;
+    return h & (WG_TCP_CONN_BUCKETS - 1);
+}
+
 /* ---- Checksum ------------------------------------------------------------ */
 /* Accumulate bytes as big-endian 16-bit words (RFC 1071). */
 static uint32_t cksum_add(const uint8_t *data, size_t len, uint32_t sum) {
@@ -69,8 +77,8 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
     size_t tcp_hdr_len  = 20 + tcp_opts_len;
     size_t ip_total     = 20 + tcp_hdr_len + datalen;
 
-    uint8_t *pkt = calloc(1, ip_total);
-    if (!pkt) return;
+    uint8_t pkt[20 + 24 + WG_TCP_MSS];
+    memset(pkt, 0, ip_total);
 
     /* IPv4 header */
     pkt[0] = 0x45;                        /* version=4, ihl=5 */
@@ -120,11 +128,138 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
     memcpy(tcp + 16, &tcp_ck, 2);
 
     device_send_ip_packet(conn->stack->dev, pkt, ip_total);
-    free(pkt);
 }
 
 /* ---- Forward decl ------------------------------------------------------- */
 static void conn_destroy(tcp_conn_t *conn);
+static void tcp_flush_pending(tcp_conn_t *conn);
+static void retransmit_cb(uv_timer_t *timer);
+
+static void flush_check_cb(uv_check_t *handle) {
+    tcpstack_t *stack = handle->data;
+    tcp_conn_t *conn = stack->flush_head;
+
+    stack->flush_head = NULL;
+    stack->flush_tail = NULL;
+    uv_check_stop(handle);
+
+    while (conn) {
+        tcp_conn_t *next = conn->flush_next;
+        conn->flush_next = NULL;
+        conn->flush_queued = 0;
+        if (!conn->being_freed)
+            tcp_flush_pending(conn);
+        conn = next;
+    }
+}
+
+static void schedule_flush(tcp_conn_t *conn) {
+    tcpstack_t *stack = conn->stack;
+
+    if (conn->being_freed || conn->flush_queued)
+        return;
+
+    conn->flush_queued = 1;
+    conn->flush_next = NULL;
+    if (stack->flush_tail)
+        stack->flush_tail->flush_next = conn;
+    else
+        stack->flush_head = conn;
+    stack->flush_tail = conn;
+
+    uv_check_start(&stack->flush_check, flush_check_cb);
+}
+
+static void bucket_insert(tcpstack_t *stack, tcp_conn_t *conn) {
+    uint32_t bucket = conn_hash(conn->local_ip, conn->remote_ip,
+                                conn->local_port, conn->remote_port);
+    conn->hash_next = stack->conn_buckets[bucket];
+    stack->conn_buckets[bucket] = conn;
+}
+
+static void bucket_remove(tcpstack_t *stack, tcp_conn_t *conn) {
+    uint32_t bucket = conn_hash(conn->local_ip, conn->remote_ip,
+                                conn->local_port, conn->remote_port);
+    tcp_conn_t **pp = &stack->conn_buckets[bucket];
+    while (*pp && *pp != conn)
+        pp = &(*pp)->hash_next;
+    if (*pp)
+        *pp = conn->hash_next;
+    conn->hash_next = NULL;
+}
+
+static void flush_remove(tcpstack_t *stack, tcp_conn_t *conn) {
+    if (!conn->flush_queued)
+        return;
+
+    tcp_conn_t **pp = &stack->flush_head;
+    while (*pp && *pp != conn)
+        pp = &(*pp)->flush_next;
+    if (*pp) {
+        *pp = conn->flush_next;
+        if (stack->flush_tail == conn)
+            stack->flush_tail = NULL;
+        if (!stack->flush_head)
+            uv_check_stop(&stack->flush_check);
+        else if (!stack->flush_tail) {
+            tcp_conn_t *tail = stack->flush_head;
+            while (tail->flush_next)
+                tail = tail->flush_next;
+            stack->flush_tail = tail;
+        }
+    }
+    conn->flush_next = NULL;
+    conn->flush_queued = 0;
+}
+
+static tcp_conn_t *bucket_lookup(tcpstack_t *stack,
+                                 uint32_t local_ip, uint32_t remote_ip,
+                                 uint16_t local_port, uint16_t remote_port) {
+    uint32_t bucket = conn_hash(local_ip, remote_ip, local_port, remote_port);
+    for (tcp_conn_t *c = stack->conn_buckets[bucket]; c; c = c->hash_next) {
+        if (c->being_freed)
+            continue;
+        if (c->local_ip    == local_ip &&
+            c->remote_ip   == remote_ip &&
+            c->local_port  == local_port &&
+            c->remote_port == remote_port)
+            return c;
+    }
+    return NULL;
+}
+
+static void tcp_flush_pending(tcp_conn_t *conn) {
+    if (!conn || conn->being_freed || conn->state != TCPS_ESTABLISHED)
+        return;
+
+    uint32_t in_flight = conn->snd_nxt - conn->snd_una;
+    while (in_flight < conn->sendbuf_len) {
+        uint32_t send_budget = conn->snd_wnd > in_flight ?
+                               conn->snd_wnd - in_flight : 0;
+        if (send_budget == 0)
+            break;
+
+        uint32_t remaining = conn->sendbuf_len - in_flight;
+        uint32_t seg_len   = remaining < WG_TCP_MSS ? remaining : WG_TCP_MSS;
+        if (seg_len > send_budget)
+            seg_len = send_budget;
+        if (seg_len == 0)
+            break;
+
+        send_segment(conn, TCPF_ACK | TCPF_PSH,
+                     conn->snd_una + in_flight, conn->rcv_nxt,
+                     conn->sendbuf + in_flight, seg_len);
+        in_flight += seg_len;
+    }
+    conn->snd_nxt = conn->snd_una + in_flight;
+
+    if (conn->sendbuf_len > 0 &&
+        !uv_is_active((uv_handle_t *)&conn->retransmit_timer)) {
+        conn->retransmit_count = 0;
+        uv_timer_start(&conn->retransmit_timer, retransmit_cb,
+                       WG_TCP_RETRANSMIT_MS, 0);
+    }
+}
 
 /* ---- Retransmit timer callback ------------------------------------------ */
 static void retransmit_cb(uv_timer_t *timer) {
@@ -178,7 +313,8 @@ static void retransmit_cb(uv_timer_t *timer) {
     }
 
     uint64_t backoff = (uint64_t)WG_TCP_RETRANSMIT_MS << conn->retransmit_count;
-    if (backoff > 60000) backoff = 60000;
+    if (backoff > WG_TCP_RETRANSMIT_MAX_MS)
+        backoff = WG_TCP_RETRANSMIT_MAX_MS;
     uv_timer_start(timer, retransmit_cb, backoff, 0);
 }
 
@@ -204,6 +340,8 @@ static void conn_destroy(tcp_conn_t *conn) {
     while (*pp && *pp != conn) pp = &(*pp)->next;
     if (*pp) *pp = conn->next;
     conn->next = NULL;
+    bucket_remove(stack, conn);
+    flush_remove(stack, conn);
 
     /* Stop timer and async-free via close callback */
     if (conn->timer_initialized) {
@@ -228,9 +366,17 @@ void tcpstack_init(tcpstack_t *stack, struct wg_device *dev,
     stack->local_ip  = local_ip;
     stack->loop      = loop;
     stack->next_port = 32768;
+    uv_check_init(loop, &stack->flush_check);
+    stack->flush_check.data = stack;
+    stack->flush_check_initialized = 1;
 }
 
 void tcpstack_free(tcpstack_t *stack) {
+    if (stack->flush_check_initialized &&
+        !uv_is_closing((uv_handle_t *)&stack->flush_check)) {
+        uv_check_stop(&stack->flush_check);
+        uv_close((uv_handle_t *)&stack->flush_check, NULL);
+    }
     tcp_conn_t *c = stack->conns;
     while (c) {
         tcp_conn_t *next = c->next;
@@ -277,6 +423,7 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     /* Add to list */
     conn->next   = stack->conns;
     stack->conns = conn;
+    bucket_insert(stack, conn);
 
     /* Send SYN */
     conn->state = TCPS_SYN_SENT;
@@ -296,29 +443,10 @@ int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {
     /* Append to send buffer */
     memcpy(conn->sendbuf + conn->sendbuf_len, data, len);
     conn->sendbuf_len += len;
-
-    /* Send new data in MSS segments.
-     * in_flight = snd_nxt - snd_una = bytes already sent but unacked.
-     * New data starts at sendbuf[in_flight]. */
-    uint32_t in_flight = conn->snd_nxt - conn->snd_una;
-    while (in_flight < conn->sendbuf_len) {
-        uint32_t remaining = conn->sendbuf_len - in_flight;
-        uint32_t seg_len   = remaining < WG_TCP_MSS ? remaining : WG_TCP_MSS;
-        if (conn->snd_wnd > 0 && seg_len > conn->snd_wnd)
-            seg_len = conn->snd_wnd;
-        if (seg_len == 0) break;
-        send_segment(conn, TCPF_ACK | TCPF_PSH,
-                     conn->snd_una + in_flight, conn->rcv_nxt,
-                     conn->sendbuf + in_flight, seg_len);
-        in_flight += seg_len;
-    }
-    conn->snd_nxt = conn->snd_una + in_flight;
-
-    /* Arm/reset retransmit timer */
-    if (!uv_is_active((uv_handle_t *)&conn->retransmit_timer)) {
-        conn->retransmit_count = 0;
-        uv_timer_start(&conn->retransmit_timer, retransmit_cb, WG_TCP_RETRANSMIT_MS, 0);
-    }
+    if (len >= WG_TCP_MSS || conn->sendbuf_len >= WG_TCP_MSS)
+        tcp_flush_pending(conn);
+    else
+        schedule_flush(conn);
     return 0;
 }
 
@@ -396,17 +524,7 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
     size_t         payload_len = tcp_len - data_off;
 
     /* Find matching connection */
-    tcp_conn_t *conn = NULL;
-    for (tcp_conn_t *c = stack->conns; c; c = c->next) {
-        if (c->being_freed) continue;
-        if (c->local_ip    == dst_ip   &&
-            c->remote_ip   == src_ip   &&
-            c->local_port  == dst_port &&
-            c->remote_port == src_port) {
-            conn = c;
-            break;
-        }
-    }
+    tcp_conn_t *conn = bucket_lookup(stack, dst_ip, src_ip, dst_port, src_port);
     if (!conn) return;
 
     /* RST: hard close */
@@ -476,6 +594,8 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
                 if (conn->sendbuf_len == 0) {
                     uv_timer_stop(&conn->retransmit_timer);
                     conn->retransmit_count = 0;
+                } else {
+                    tcp_flush_pending(conn);
                 }
             }
         }

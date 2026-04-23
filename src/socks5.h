@@ -5,9 +5,14 @@
 #include "tcpstack.h"
 #include <uv.h>
 
+struct socks5_conn;
+
 typedef struct socks5_server {
     uv_tcp_t   listener;
     tcpstack_t *stack;
+    uv_check_t flush_check;
+    struct socks5_conn *flush_head;
+    struct socks5_conn *flush_tail;
 } socks5_server_t;
 
 /* Start listening on bind_addr:port.  stack must remain valid. */

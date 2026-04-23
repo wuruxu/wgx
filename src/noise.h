@@ -58,6 +58,9 @@ void noise_set_static_key(wg_device_t *dev, const uint8_t priv[WG_KEY_LEN]);
 void noise_handshake_init(wg_handshake_t *hs, const uint8_t remote_static[WG_KEY_LEN],
                           const uint8_t psk[WG_PSK_LEN]);
 
+/* Clear transient handshake state while preserving peer configuration. */
+void noise_handshake_clear(wg_handshake_t *hs);
+
 /* Precompute static-static DH for a peer (call after setting device private key) */
 void noise_precompute_static_static(wg_device_t *dev, wg_peer_t *peer);
 

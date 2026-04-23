@@ -202,6 +202,11 @@ int main(int argc, char *argv[]) {
 
         g_device.socks5_server = calloc(1, sizeof(socks5_server_t));
         if (!g_device.socks5_server) { perror("calloc"); return 1; }
+
+        if (load_wg_config(&g_device, config_path) < 0) {
+            fprintf(stderr, "Failed to load config: %s\n", config_path);
+            return 1;
+        }
     }
 
     /* TUN mode: handle inherited fd + optional daemonize */
@@ -211,6 +216,9 @@ int main(int argc, char *argv[]) {
             g_device.tun_fd = atoi(tun_fd_str);
             strncpy(g_device.ifname, ifname, sizeof(g_device.ifname) - 1);
         }
+        const char *uapi_fd_str = getenv(ENV_WG_UAPI_FD);
+        if (uapi_fd_str)
+            g_device.uapi_fd = atoi(uapi_fd_str);
 
         if (!foreground) {
             int tfd = tun_open(ifname, g_device.ifname);
@@ -244,7 +252,7 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             g_device.tun_fd = tfd;
-            if (ufd >= 0) close(ufd);
+            g_device.uapi_fd = ufd;
         }
     }
 
@@ -255,12 +263,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (socks5_mode) {
-        /* Apply WireGuard config from file */
-        if (load_wg_config(&g_device, config_path) < 0) {
-            fprintf(stderr, "Failed to load config: %s\n", config_path);
-            return 1;
-        }
-
         /* Start SOCKS5 server */
         if (socks5_start(g_device.socks5_server, g_device.tcpstack,
                           socks5_bind, socks5_port) < 0) {

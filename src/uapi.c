@@ -437,17 +437,27 @@ static void on_new_conn(uv_stream_t *server, int status) {
 }
 
 int uapi_start(wg_device_t *dev) {
-    /* Ensure directory exists */
-    mkdir("/var/run/wireguard", 0700);
-    unlink(dev->uapi_path);
-
     uv_pipe_init(dev->loop, &dev->uapi_server, 0);
     dev->uapi_server.data = dev;
 
-    int ret = uv_pipe_bind(&dev->uapi_server, dev->uapi_path);
-    if (ret < 0) {
-        wg_err(dev, "UAPI bind error %s: %s", dev->uapi_path, uv_strerror(ret));
-        return -1;
+    int ret;
+    if (dev->uapi_fd >= 0) {
+        ret = uv_pipe_open(&dev->uapi_server, dev->uapi_fd);
+        if (ret < 0) {
+            wg_err(dev, "UAPI open error: %s", uv_strerror(ret));
+            return -1;
+        }
+        dev->uapi_fd = -1;
+    } else {
+        /* Ensure directory exists */
+        mkdir("/var/run/wireguard", 0700);
+        unlink(dev->uapi_path);
+
+        ret = uv_pipe_bind(&dev->uapi_server, dev->uapi_path);
+        if (ret < 0) {
+            wg_err(dev, "UAPI bind error %s: %s", dev->uapi_path, uv_strerror(ret));
+            return -1;
+        }
     }
 
     ret = uv_listen((uv_stream_t *)&dev->uapi_server, 4, on_new_conn);

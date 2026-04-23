@@ -21,8 +21,10 @@ typedef enum {
 #define WG_TCP_MSS             1380  /* WG MTU 1420 - 20 IP - 20 TCP */
 #define WG_TCP_WINDOW          65535
 #define WG_TCP_SENDBUF_SIZE    (64 * 1024)
-#define WG_TCP_RETRANSMIT_MS   3000
+#define WG_TCP_RETRANSMIT_MS   500
+#define WG_TCP_RETRANSMIT_MAX_MS 8000
 #define WG_TCP_MAX_RETRANSMIT  6
+#define WG_TCP_CONN_BUCKETS    1024
 
 /* TCP flags */
 #define TCPF_FIN  0x01
@@ -40,6 +42,8 @@ typedef void (*tcp_close_cb)(struct tcp_conn *conn);
 
 typedef struct tcp_conn {
     struct tcp_conn *next;
+    struct tcp_conn *hash_next;
+    struct tcp_conn *flush_next;
 
     uint32_t local_ip;    /* network byte order */
     uint32_t remote_ip;   /* network byte order */
@@ -64,6 +68,7 @@ typedef struct tcp_conn {
     int        timer_initialized;
     int        being_freed;
     int        close_notified;
+    int        flush_queued;
 
     tcp_connect_cb on_connect;
     tcp_data_cb    on_data;
@@ -78,6 +83,11 @@ typedef struct tcpstack {
     uint32_t          local_ip;   /* network byte order */
     uv_loop_t        *loop;
     tcp_conn_t       *conns;
+    tcp_conn_t       *conn_buckets[WG_TCP_CONN_BUCKETS];
+    tcp_conn_t       *flush_head;
+    tcp_conn_t       *flush_tail;
+    uv_check_t        flush_check;
+    int               flush_check_initialized;
     uint16_t          next_port;  /* ephemeral port counter */
 } tcpstack_t;
 

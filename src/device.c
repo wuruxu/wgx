@@ -42,6 +42,75 @@ static uv_udp_t *udp_for_family(wg_device_t *dev, sa_family_t family) {
     return &dev->udp4;
 }
 
+typedef struct {
+    uv_udp_send_t req;
+    uv_buf_t      buf;
+} udp_send_req_t;
+
+static void udp_send_done(uv_udp_send_t *req, int status) {
+    udp_send_req_t *sreq = (udp_send_req_t *)req;
+    (void)status;
+    free(sreq->buf.base);
+    free(sreq);
+}
+
+static int udp_send_copy(wg_device_t *dev, const struct sockaddr *addr,
+                         sa_family_t family, const uint8_t *data, size_t len) {
+    uv_buf_t uvbuf = uv_buf_init((char *)data, (unsigned int)len);
+    int ret = uv_udp_try_send(udp_for_family(dev, family), &uvbuf, 1, addr);
+    if (ret >= 0)
+        return 0;
+    if (ret != UV_EAGAIN)
+        return ret;
+
+    udp_send_req_t *sreq = calloc(1, sizeof(*sreq));
+    if (!sreq)
+        return UV_ENOMEM;
+    sreq->buf.base = malloc(len);
+    if (!sreq->buf.base) {
+        free(sreq);
+        return UV_ENOMEM;
+    }
+    memcpy(sreq->buf.base, data, len);
+    sreq->buf.len = len;
+    ret = uv_udp_send(&sreq->req, udp_for_family(dev, family),
+                      &sreq->buf, 1, addr, udp_send_done);
+    if (ret < 0) {
+        free(sreq->buf.base);
+        free(sreq);
+    }
+    return ret;
+}
+
+static int udp_send_owned(wg_device_t *dev, const struct sockaddr *addr,
+                          sa_family_t family, uint8_t *data, size_t len) {
+    uv_buf_t uvbuf = uv_buf_init((char *)data, (unsigned int)len);
+    int ret = uv_udp_try_send(udp_for_family(dev, family), &uvbuf, 1, addr);
+    if (ret >= 0) {
+        free(data);
+        return 0;
+    }
+    if (ret != UV_EAGAIN) {
+        free(data);
+        return ret;
+    }
+
+    udp_send_req_t *sreq = calloc(1, sizeof(*sreq));
+    if (!sreq) {
+        free(data);
+        return UV_ENOMEM;
+    }
+    sreq->buf.base = (char *)data;
+    sreq->buf.len = len;
+    ret = uv_udp_send(&sreq->req, udp_for_family(dev, family),
+                      &sreq->buf, 1, addr, udp_send_done);
+    if (ret < 0) {
+        free(data);
+        free(sreq);
+    }
+    return ret;
+}
+
 /* ---- Peer management ---- */
 wg_peer_t *device_add_peer(wg_device_t *dev, const uint8_t pk[WG_KEY_LEN]) {
     /* Check duplicate */
@@ -261,20 +330,16 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     if (ep_len == 0) { free(buf); return -1; }
 
     /* Send via UDP - choose socket based on endpoint address family */
-    uv_buf_t uvbuf = uv_buf_init((char *)buf, total);
-
-    int sent = uv_udp_try_send(udp_for_family(dev, ep.ss_family), &uvbuf, 1,
-                                (const struct sockaddr *)&ep);
+    int sent = udp_send_owned(dev, (const struct sockaddr *)&ep, ep.ss_family,
+                              buf, total);
     if (sent < 0)
         wg_dbg(dev, "UDP send error: %s", uv_strerror(sent));
     else
         atomic_fetch_add(&peer->tx_bytes, total);
 
-    free(buf);
-
     /* Trigger timer: sent data → start keepalive timer */
     timers_data_sent(dev, peer);
-    if (nonce >= REKEY_AFTER_TIME_MS)
+    if (nonce >= REKEY_AFTER_MESSAGES)
         timers_handshake_begin(dev, peer);
 
     return 0;
@@ -328,9 +393,8 @@ int device_initiate_handshake(wg_device_t *dev, wg_peer_t *peer) {
     memcpy(&ep, &peer->endpoint, ep_len);
     pthread_mutex_unlock(&peer->endpoint_lock);
 
-    uv_buf_t uvbuf = uv_buf_init((char *)&msg, MSG_INITIATION_SIZE);
-    int ret = uv_udp_try_send(udp_for_family(dev, ep.ss_family), &uvbuf, 1,
-                               (const struct sockaddr *)&ep);
+    int ret = udp_send_copy(dev, (const struct sockaddr *)&ep, ep.ss_family,
+                            (const uint8_t *)&msg, MSG_INITIATION_SIZE);
     if (ret < 0)
         wg_err(dev, "Handshake send error: %s", uv_strerror(ret));
     else
@@ -361,9 +425,8 @@ static void handle_initiation(wg_device_t *dev,
         msg_cookie_reply_t reply;
         cookie_create_reply(&dev->cookie_checker, src,
                              msg->mac1, msg->sender, &reply, now_ms);
-        uv_buf_t uvbuf = uv_buf_init((char *)&reply, MSG_COOKIE_REPLY_SIZE);
-        uv_udp_try_send(udp_for_family(dev, src->ss_family), &uvbuf, 1,
-                        (const struct sockaddr *)src);
+        udp_send_copy(dev, (const struct sockaddr *)src, src->ss_family,
+                      (const uint8_t *)&reply, MSG_COOKIE_REPLY_SIZE);
         return;
     }
 
@@ -384,9 +447,8 @@ static void handle_initiation(wg_device_t *dev,
         return;
     }
 
-    uv_buf_t uvbuf = uv_buf_init((char *)&resp, MSG_RESPONSE_SIZE);
-    uv_udp_try_send(udp_for_family(dev, src->ss_family), &uvbuf, 1,
-                    (const struct sockaddr *)src);
+    udp_send_copy(dev, (const struct sockaddr *)src, src->ss_family,
+                  (const uint8_t *)&resp, MSG_RESPONSE_SIZE);
     wg_dbg(dev, "Sent handshake response");
 
     /* Derive session keys (responder side) */
@@ -682,9 +744,11 @@ int device_init(wg_device_t *dev, const char *ifname, uv_loop_t *loop) {
     dev->loop      = loop;
     dev->log_level = LOG_ERROR;
     dev->tun_fd    = -1;
+    dev->uapi_fd   = -1;
 
     pthread_rwlock_init(&dev->identity_lock, NULL);
     pthread_rwlock_init(&dev->peers_lock, NULL);
+    pthread_mutex_init(&dev->cookie_checker.mutex, NULL);
 
     index_table_init(&dev->index_table);
     allowedips_init(&dev->allowedips);
@@ -699,10 +763,12 @@ int device_init(wg_device_t *dev, const char *ifname, uv_loop_t *loop) {
 int device_start(wg_device_t *dev) {
     /* Open TUN (skipped in SOCKS5 mode) */
     if (!dev->socks5_mode) {
-        dev->tun_fd = tun_open(dev->ifname, dev->ifname);
         if (dev->tun_fd < 0) {
-            wg_err(dev, "Failed to open TUN device");
-            return -1;
+            dev->tun_fd = tun_open(dev->ifname, dev->ifname);
+            if (dev->tun_fd < 0) {
+                wg_err(dev, "Failed to open TUN device");
+                return -1;
+            }
         }
         tun_set_mtu(dev->ifname, WG_DEFAULT_MTU);
         tun_bring_up(dev->ifname);
@@ -808,6 +874,7 @@ void device_free(wg_device_t *dev) {
     device_remove_all_peers(dev);
     allowedips_free(&dev->allowedips);
     index_table_free(&dev->index_table);
+    pthread_mutex_destroy(&dev->cookie_checker.mutex);
     pthread_rwlock_destroy(&dev->identity_lock);
     pthread_rwlock_destroy(&dev->peers_lock);
 }

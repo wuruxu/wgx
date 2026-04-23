@@ -60,7 +60,6 @@ void noise_precompute_static_static(wg_device_t *dev, wg_peer_t *peer) {
 void noise_handshake_init(wg_handshake_t *hs,
                            const uint8_t remote_static[WG_KEY_LEN],
                            const uint8_t psk[WG_PSK_LEN]) {
-    pthread_mutex_init(&hs->mutex, NULL);
     hs->state = HS_ZEROED;
     memcpy(hs->remote_static, remote_static, WG_KEY_LEN);
     if (psk)
@@ -70,6 +69,18 @@ void noise_handshake_init(wg_handshake_t *hs,
     tai64n_zero(&hs->last_timestamp);
     hs->last_initiation_consumption_ms = 0;
     hs->last_sent_handshake_ms = 0;
+}
+
+void noise_handshake_clear(wg_handshake_t *hs) {
+    wg_memzero(hs->hash, sizeof(hs->hash));
+    wg_memzero(hs->chain_key, sizeof(hs->chain_key));
+    wg_memzero(hs->local_ephemeral_priv, sizeof(hs->local_ephemeral_priv));
+    wg_memzero(hs->local_ephemeral_pub, sizeof(hs->local_ephemeral_pub));
+    wg_memzero(hs->remote_ephemeral, sizeof(hs->remote_ephemeral));
+    hs->local_index = 0;
+    hs->remote_index = 0;
+    hs->last_sent_handshake_ms = 0;
+    hs->state = HS_ZEROED;
 }
 
 /* ---- Index table ---- */
@@ -150,7 +161,6 @@ void index_table_swap_keypair(index_table_t *t, uint32_t old_idx, wg_keypair_t *
 
 /* ---- Cookie / MAC ---- */
 void cookie_checker_init(wg_cookie_checker_t *cc, const uint8_t pub[WG_KEY_LEN]) {
-    pthread_mutex_init(&cc->mutex, NULL);
     /* mac1_key = BLAKE2s(Label_mac1 || pub) */
     blake2s_state S;
     blake2s_init(&S, WG_HASH_LEN);
@@ -727,10 +737,7 @@ int noise_begin_session(wg_device_t *dev, wg_peer_t *peer) {
                  (int64_t)now_ts.tv_sec * 1000000000LL + now_ts.tv_nsec);
 
     /* Zero handshake */
-    wg_memzero(hs->chain_key,      sizeof(hs->chain_key));
-    wg_memzero(hs->hash,           sizeof(hs->hash));
-    wg_memzero(hs->local_ephemeral_priv, sizeof(hs->local_ephemeral_priv));
-    hs->state = HS_ZEROED;
+    noise_handshake_clear(hs);
     pthread_mutex_unlock(&hs->mutex);
 
     /* Rotate keypairs */
