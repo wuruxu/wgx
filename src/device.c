@@ -6,6 +6,7 @@
 #include "timers.h"
 #include "uapi.h"
 #include "tcpstack.h"
+#include "tcp_worker.h"
 #include "socks5.h"
 #include <stdlib.h>
 #include <string.h>
@@ -328,6 +329,8 @@ int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len) {
     struct in_addr dst;
     memcpy(&dst, pkt + 16, 4); /* destination IP at offset 16 */
     wg_peer_t *peer = allowedips_lookup_v4(&dev->allowedips, &dst);
+    if (dev->socks5_mode && dev->tcp_worker)
+        return tcp_worker_enqueue_outbound(dev->tcp_worker, pkt, len);
     if (!peer) {
         wg_dbg(dev, "device_send_ip_packet: no peer for dst %s",
                inet_ntoa(dst));
@@ -577,8 +580,10 @@ static void handle_transport(wg_device_t *dev,
 
     /* Deliver plaintext if non-empty */
     if (ptlen > 0) {
-        if (dev->socks5_mode && dev->tcpstack) {
-            /* SOCKS5 mode: feed into userspace TCP stack */
+        if (dev->socks5_mode && dev->tcp_worker) {
+            tcp_worker_enqueue_inbound(dev->tcp_worker, plaintext, ptlen);
+        } else if (dev->socks5_mode && dev->tcpstack) {
+            /* Legacy single-loop SOCKS5 mode */
             tcpstack_input(dev->tcpstack, plaintext, ptlen);
         } else {
             /* TUN mode: verify allowed IPs then write to TUN */
@@ -830,6 +835,9 @@ void device_stop(wg_device_t *dev) {
     if (!dev->socks5_mode)
         uapi_stop(dev);
 
+    if (dev->socks5_mode && dev->tcp_worker) {
+        tcp_worker_stop(dev->tcp_worker);
+    }
     if (dev->socks5_mode && dev->socks5_server) {
         socks5_stop(dev->socks5_server);
         free(dev->socks5_server);

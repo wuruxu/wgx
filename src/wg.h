@@ -68,6 +68,7 @@ struct wg_keypair;
 struct wg_handshake;
 struct tcpstack;
 struct socks5_server;
+struct tcp_worker;
 
 /* ---- Keypair ---- */
 typedef struct wg_keypair {
@@ -255,6 +256,7 @@ typedef struct wg_device {
     uint32_t            wg_local_ip;    /* our VPN IP, network byte order */
     struct tcpstack    *tcpstack;
     struct socks5_server *socks5_server;
+    struct tcp_worker  *tcp_worker;
 } wg_device_t;
 
 /* Log levels */

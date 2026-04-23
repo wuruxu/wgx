@@ -11,6 +11,7 @@
 #include "device.h"
 #include "tun.h"
 #include "tcpstack.h"
+#include "tcp_worker.h"
 #include "socks5.h"
 #include "conf.h"
 #include <stdio.h>
@@ -195,14 +196,6 @@ int main(int argc, char *argv[]) {
         }
         g_device.wg_local_ip = wg_ip.s_addr; /* network byte order */
 
-        g_device.tcpstack = calloc(1, sizeof(tcpstack_t));
-        if (!g_device.tcpstack) { perror("calloc"); return 1; }
-        tcpstack_init(g_device.tcpstack, &g_device,
-                      g_device.wg_local_ip, &g_loop);
-
-        g_device.socks5_server = calloc(1, sizeof(socks5_server_t));
-        if (!g_device.socks5_server) { perror("calloc"); return 1; }
-
         if (load_wg_config(&g_device, config_path) < 0) {
             fprintf(stderr, "Failed to load config: %s\n", config_path);
             return 1;
@@ -263,9 +256,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (socks5_mode) {
-        /* Start SOCKS5 server */
-        if (socks5_start(g_device.socks5_server, g_device.tcpstack,
-                          socks5_bind, socks5_port) < 0) {
+        if (tcp_worker_start(&g_device.tcp_worker, &g_device,
+                             socks5_bind, socks5_port) < 0) {
             fprintf(stderr, "Failed to start SOCKS5 server on %s:%u\n",
                     socks5_bind, socks5_port);
             return 1;
