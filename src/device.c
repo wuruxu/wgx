@@ -82,35 +82,6 @@ static int udp_send_copy(wg_device_t *dev, const struct sockaddr *addr,
     return ret;
 }
 
-static int udp_send_owned(wg_device_t *dev, const struct sockaddr *addr,
-                          sa_family_t family, uint8_t *data, size_t len) {
-    uv_buf_t uvbuf = uv_buf_init((char *)data, (unsigned int)len);
-    int ret = uv_udp_try_send(udp_for_family(dev, family), &uvbuf, 1, addr);
-    if (ret >= 0) {
-        free(data);
-        return 0;
-    }
-    if (ret != UV_EAGAIN) {
-        free(data);
-        return ret;
-    }
-
-    udp_send_req_t *sreq = calloc(1, sizeof(*sreq));
-    if (!sreq) {
-        free(data);
-        return UV_ENOMEM;
-    }
-    sreq->buf.base = (char *)data;
-    sreq->buf.len = len;
-    ret = uv_udp_send(&sreq->req, udp_for_family(dev, family),
-                      &sreq->buf, 1, addr, udp_send_done);
-    if (ret < 0) {
-        free(data);
-        free(sreq);
-    }
-    return ret;
-}
-
 /* ---- Peer management ---- */
 wg_peer_t *device_add_peer(wg_device_t *dev, const uint8_t pk[WG_KEY_LEN]) {
     /* Check duplicate */
@@ -330,8 +301,9 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     if (ep_len == 0) { free(buf); return -1; }
 
     /* Send via UDP - choose socket based on endpoint address family */
-    int sent = udp_send_owned(dev, (const struct sockaddr *)&ep, ep.ss_family,
-                              buf, total);
+    int sent = udp_send_copy(dev, (const struct sockaddr *)&ep, ep.ss_family,
+                             buf, total);
+    free(buf);
     if (sent < 0)
         wg_dbg(dev, "UDP send error: %s", uv_strerror(sent));
     else
