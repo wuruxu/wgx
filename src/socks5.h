@@ -3,9 +3,11 @@
  */
 #pragma once
 #include "tcpstack.h"
+#include <ares.h>
 #include <uv.h>
 
 struct socks5_conn;
+struct socks5_dns_socket;
 
 /* Optional per-worker DNS cache, disabled by default. */
 #define SOCKS5_DNS_CACHE_SIZE  64
@@ -26,6 +28,11 @@ typedef struct socks5_server {
     struct socks5_conn *flush_tail;
     int dns_cache_enabled;
     socks5_dns_cache_entry_t dns_cache[SOCKS5_DNS_CACHE_SIZE];
+    int dns_using_cares;
+    ares_channel dns_channel;
+    uv_timer_t dns_timer;
+    int dns_timer_initialized;
+    struct socks5_dns_socket *dns_sockets;
 } socks5_server_t;
 
 /* Start listening on bind_addr:port.  stack must remain valid. */

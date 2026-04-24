@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 /* ---- SOCKS5 constants --------------------------------------------------- */
 #define S5_VER          5
@@ -38,6 +39,8 @@ typedef enum {
     S5W_WRITING,
     S5W_CLOSED,
 } socks5_write_state_t;
+
+typedef struct resolve_req_ctx resolve_req_ctx_t;
 
 static const char *s5_state_name(socks5_state_t state) {
     switch (state) {
@@ -73,7 +76,9 @@ typedef struct socks5_conn {
     uint8_t        rxbuf[512];
     size_t         rxbuf_len;
 
+    int            target_family;
     uint32_t       target_ip;   /* NBO */
+    struct in6_addr target_ip6;
     uint16_t       target_port; /* HBO */
 
     /* Pending data from WG before ESTABLISHED reply is sent */
@@ -87,17 +92,26 @@ typedef struct socks5_conn {
     size_t         write_buf_len;
     size_t         write_buf_cap;
     uv_write_t     write_req;
-    uv_getaddrinfo_t *resolve_req;
+    resolve_req_ctx_t *resolve_req;
     socks5_write_state_t write_state;
 
     tcpstack_t    *stack;
 } socks5_conn_t;
 
-typedef struct {
-    uv_getaddrinfo_t req;
+struct resolve_req_ctx {
+    uv_getaddrinfo_t uv_req;
     socks5_conn_t   *sc;
     char             domain[256];
-} resolve_req_ctx_t;
+    int              backend;
+};
+
+typedef struct socks5_dns_socket {
+    ares_socket_t              fd;
+    uv_poll_t                  poll;
+    int                        events;
+    socks5_server_t           *srv;
+    struct socks5_dns_socket  *next;
+} socks5_dns_socket_t;
 
 /* ---- Forward declarations ----------------------------------------------- */
 static void socks5_conn_close(socks5_conn_t *sc);
@@ -107,7 +121,10 @@ static void client_read_established(socks5_conn_t *sc,
 static void client_flush(socks5_conn_t *sc);
 static void flush_check_cb(uv_check_t *handle);
 static void resolve_complete(socks5_conn_t *sc, const char *domain,
-                             int status, uint32_t ip);
+                             int status, int family,
+                             uint32_t ip, const struct in6_addr *ip6);
+static void cares_update_timer(socks5_server_t *srv);
+static void cares_timer_cb(uv_timer_t *handle);
 
 static int dns_cache_lookup(socks5_server_t *srv, const char *domain,
                             uint64_t now_ms, uint32_t *ip_out) {
@@ -160,6 +177,106 @@ static void dns_cache_store(socks5_server_t *srv, const char *domain,
     slot->expires_at_ms = now_ms + SOCKS5_DNS_TTL_MS;
     slot->last_used_ms = now_ms;
     snprintf(slot->domain, sizeof(slot->domain), "%s", domain);
+}
+
+static socks5_dns_socket_t *cares_find_socket(socks5_server_t *srv, ares_socket_t fd) {
+    for (socks5_dns_socket_t *w = srv->dns_sockets; w; w = w->next) {
+        if (w->fd == fd)
+            return w;
+    }
+    return NULL;
+}
+
+static void cares_poll_close_cb(uv_handle_t *handle) {
+    free(handle->data);
+}
+
+static void cares_update_timer(socks5_server_t *srv) {
+    if (!srv->dns_using_cares || !srv->dns_timer_initialized)
+        return;
+
+    struct timeval tv;
+    struct timeval *next = ares_timeout(srv->dns_channel, NULL, &tv);
+    if (!next) {
+        uv_timer_stop(&srv->dns_timer);
+        return;
+    }
+
+    uint64_t timeout_ms = (uint64_t)next->tv_sec * 1000 +
+                          (uint64_t)next->tv_usec / 1000;
+    if (timeout_ms == 0)
+        timeout_ms = 1;
+    uv_timer_start(&srv->dns_timer, cares_timer_cb, timeout_ms, 0);
+}
+
+static void cares_timer_cb(uv_timer_t *handle) {
+    socks5_server_t *srv = handle->data;
+    if (!srv->dns_using_cares)
+        return;
+    ares_process_fd(srv->dns_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+    cares_update_timer(srv);
+}
+
+static void cares_poll_cb(uv_poll_t *handle, int status, int events) {
+    socks5_dns_socket_t *w = handle->data;
+    socks5_server_t *srv = w->srv;
+    if (status < 0) {
+        ares_process_fd(srv->dns_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+        cares_update_timer(srv);
+        return;
+    }
+
+    ares_socket_t rfd = (events & UV_READABLE) ? w->fd : ARES_SOCKET_BAD;
+    ares_socket_t wfd = (events & UV_WRITABLE) ? w->fd : ARES_SOCKET_BAD;
+    ares_process_fd(srv->dns_channel, rfd, wfd);
+    cares_update_timer(srv);
+}
+
+static void cares_sock_state_cb(void *data, ares_socket_t fd, int readable, int writable) {
+    socks5_server_t *srv = data;
+    int events = 0;
+    if (readable)
+        events |= UV_READABLE;
+    if (writable)
+        events |= UV_WRITABLE;
+
+    socks5_dns_socket_t *w = cares_find_socket(srv, fd);
+    if (events == 0) {
+        if (!w)
+            return;
+        socks5_dns_socket_t **pp = &srv->dns_sockets;
+        while (*pp && *pp != w)
+            pp = &(*pp)->next;
+        if (*pp)
+            *pp = w->next;
+        uv_poll_stop(&w->poll);
+        uv_close((uv_handle_t *)&w->poll, cares_poll_close_cb);
+        cares_update_timer(srv);
+        return;
+    }
+
+    if (!w) {
+        w = calloc(1, sizeof(*w));
+        if (!w)
+            return;
+        w->fd = fd;
+        w->srv = srv;
+        socks5_dns_socket_t *old_head = srv->dns_sockets;
+        w->next = srv->dns_sockets;
+        srv->dns_sockets = w;
+        if (uv_poll_init_socket(srv->stack->loop, &w->poll, fd) < 0) {
+            srv->dns_sockets = old_head;
+            free(w);
+            return;
+        }
+        w->poll.data = w;
+    }
+
+    if (w->events != events) {
+        w->events = events;
+        uv_poll_start(&w->poll, events, cares_poll_cb);
+    }
+    cares_update_timer(srv);
 }
 
 static void flush_remove(socks5_conn_t *sc) {
@@ -387,12 +504,12 @@ static void socks5_conn_close(socks5_conn_t *sc) {
         sc->wg_conn = NULL;
     }
     if (sc->resolve_req) {
-        resolve_req_ctx_t *ctx = sc->resolve_req->data;
+        resolve_req_ctx_t *ctx = sc->resolve_req;
         wg_dbg(sc->stack->dev, "s5 conn=%p resolve_cancel req=%p",
                (void *)sc, (void *)sc->resolve_req);
-        if (ctx)
-            ctx->sc = NULL;
-        uv_cancel((uv_req_t *)sc->resolve_req);
+        ctx->sc = NULL;
+        if (ctx->backend == 0)
+            uv_cancel((uv_req_t *)&ctx->uv_req);
         sc->resolve_req = NULL;
     }
 
@@ -420,33 +537,106 @@ static void on_resolved(uv_getaddrinfo_t *req, int status,
     }
 
     uint32_t ip = 0;
+    struct in6_addr ip6;
+    memset(&ip6, 0, sizeof(ip6));
+    int family = AF_UNSPEC;
     if (status >= 0 && res) {
         struct addrinfo *ai = res;
-        while (ai && ai->ai_family != AF_INET)
+        struct addrinfo *ai4 = NULL;
+        struct addrinfo *ai6 = NULL;
+        while (ai) {
+            if (!ai4 && ai->ai_family == AF_INET)
+                ai4 = ai;
+            else if (!ai6 && ai->ai_family == AF_INET6)
+                ai6 = ai;
             ai = ai->ai_next;
-        if (ai)
-            ip = ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
-        else
+        }
+        if (ai4) {
+            family = AF_INET;
+            ip = ((struct sockaddr_in *)ai4->ai_addr)->sin_addr.s_addr;
+        } else if (ai6) {
+            family = AF_INET6;
+            memcpy(&ip6, &((struct sockaddr_in6 *)ai6->ai_addr)->sin6_addr, sizeof(ip6));
+        } else {
             status = UV_EAI_NONAME;
+        }
     }
 
     uv_freeaddrinfo(res);
-    resolve_complete(sc, ctx->domain, status, ip);
+    resolve_complete(sc, ctx->domain, status, family, ip, &ip6);
+    free(ctx);
+}
+
+static void cares_addrinfo_cb(void *arg, int status, int timeouts,
+                              struct ares_addrinfo *res) {
+    (void)timeouts;
+    resolve_req_ctx_t *ctx = arg;
+    socks5_conn_t *sc = ctx ? ctx->sc : NULL;
+    if (sc)
+        sc->resolve_req = NULL;
+    if (sc)
+        wg_dbg(sc->stack->dev, "s5 conn=%p resolve_done status=%d domain=%s",
+               (void *)sc, status, ctx->domain);
+
+    uint32_t ip = 0;
+    struct in6_addr ip6;
+    memset(&ip6, 0, sizeof(ip6));
+    int family = AF_UNSPEC;
+    if (status == ARES_SUCCESS && res) {
+        struct ares_addrinfo_node *node = res->nodes;
+        struct ares_addrinfo_node *node4 = NULL;
+        struct ares_addrinfo_node *node6 = NULL;
+        while (node) {
+            if (!node4 && node->ai_family == AF_INET)
+                node4 = node;
+            else if (!node6 && node->ai_family == AF_INET6)
+                node6 = node;
+            node = node->ai_next;
+        }
+        if (node4) {
+            family = AF_INET;
+            ip = ((struct sockaddr_in *)node4->ai_addr)->sin_addr.s_addr;
+            status = 0;
+        } else if (node6) {
+            family = AF_INET6;
+            memcpy(&ip6, &((struct sockaddr_in6 *)node6->ai_addr)->sin6_addr, sizeof(ip6));
+            status = 0;
+        } else {
+            status = ARES_ENODATA;
+        }
+    }
+    if (res)
+        ares_freeaddrinfo(res);
+    if (status != ARES_SUCCESS)
+        status = -1;
+    resolve_complete(sc, ctx->domain, status, family, ip, &ip6);
     free(ctx);
 }
 
 static void resolve_complete(socks5_conn_t *sc, const char *domain,
-                             int status, uint32_t ip) {
+                             int status, int family,
+                             uint32_t ip, const struct in6_addr *ip6) {
     if (!sc || sc->write_state == S5W_CLOSED)
         return;
-    if (status < 0 || ip == 0) {
+    if (status < 0 || family == AF_UNSPEC) {
         send_reply(sc, S5_REP_FAIL);
         socks5_conn_close(sc);
         return;
     }
 
-    sc->target_ip = ip;
-    dns_cache_store(sc->server, domain, ip, uv_now(sc->stack->loop));
+    sc->target_family = family;
+    if (family == AF_INET) {
+        sc->target_ip = ip;
+        dns_cache_store(sc->server, domain, ip, uv_now(sc->stack->loop));
+    } else if (family == AF_INET6 && ip6) {
+        sc->target_ip = 0;
+        sc->target_ip6 = *ip6;
+        wg_dbg(sc->stack->dev, "s5 conn=%p resolved IPv6 for %s but tcpstack is IPv4-only",
+               (void *)sc, domain);
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        return;
+    }
     sc->state = S5_CONNECTING;
     do_connect(sc);
 }
@@ -516,6 +706,7 @@ static void process_connect_request(socks5_conn_t *sc) {
     sc->target_port = ntohs(port);
 
     if (atyp == S5_ATYP_IPV4) {
+        sc->target_family = AF_INET;
         memcpy(&sc->target_ip, sc->rxbuf + 4, 4); /* NBO */
         sc->state = S5_CONNECTING;
         do_connect(sc);
@@ -532,7 +723,7 @@ static void process_connect_request(socks5_conn_t *sc) {
                              &cached_ip) == 0) {
             wg_dbg(sc->stack->dev, "s5 conn=%p resolve_cache_hit domain=%s",
                    (void *)sc, domain);
-            resolve_complete(sc, domain, 0, cached_ip);
+            resolve_complete(sc, domain, 0, AF_INET, cached_ip, NULL);
             return;
         }
         resolve_req_ctx_t *ctx = calloc(1, sizeof(*ctx));
@@ -545,19 +736,31 @@ static void process_connect_request(socks5_conn_t *sc) {
         ctx->sc = sc;
         wg_dbg(sc->stack->dev, "s5 conn=%p resolve_start domain=%s",
                (void *)sc, domain);
-        sc->resolve_req = &ctx->req;
-        ctx->req.data = ctx;
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        int ret = uv_getaddrinfo(sc->stack->loop, &ctx->req, on_resolved,
-                                  domain, NULL, &hints);
-        if (ret < 0) {
-            free(ctx);
-            sc->resolve_req = NULL;
-            send_reply(sc, S5_REP_FAIL);
-            socks5_conn_close(sc);
+        sc->resolve_req = ctx;
+        if (sc->server->dns_using_cares) {
+            ctx->backend = 1;
+            struct ares_addrinfo_hints hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            ares_getaddrinfo(sc->server->dns_channel, domain, NULL,
+                             &hints, cares_addrinfo_cb, ctx);
+            cares_update_timer(sc->server);
+        } else {
+            ctx->backend = 0;
+            ctx->uv_req.data = ctx;
+            struct addrinfo hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family   = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            int ret = uv_getaddrinfo(sc->stack->loop, &ctx->uv_req, on_resolved,
+                                      domain, NULL, &hints);
+            if (ret < 0) {
+                free(ctx);
+                sc->resolve_req = NULL;
+                send_reply(sc, S5_REP_FAIL);
+                socks5_conn_close(sc);
+            }
         }
 
     } else {
@@ -670,6 +873,22 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
     const char *cache_env = getenv("SOCKS5_DNS_CACHE");
     srv->dns_cache_enabled = cache_env && strcmp(cache_env, "0") != 0;
 
+    if (ares_library_init(ARES_LIB_INIT_ALL) == ARES_SUCCESS) {
+        struct ares_options opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.sock_state_cb = cares_sock_state_cb;
+        opts.sock_state_cb_data = srv;
+        if (ares_init_options(&srv->dns_channel, &opts,
+                              ARES_OPT_SOCK_STATE_CB) == ARES_SUCCESS) {
+            uv_timer_init(stack->loop, &srv->dns_timer);
+            srv->dns_timer.data = srv;
+            srv->dns_timer_initialized = 1;
+            srv->dns_using_cares = 1;
+        } else {
+            ares_library_cleanup();
+        }
+    }
+
     uv_loop_t *loop = stack->loop;
     uv_tcp_init(loop, &srv->listener);
     srv->listener.data = srv;
@@ -687,6 +906,8 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
     if (ret < 0) return ret;
 
     fprintf(stderr, "SOCKS5 proxy listening on %s:%u\n", bind_addr, port);
+    fprintf(stderr, "SOCKS5 DNS resolver: %s\n",
+            srv->dns_using_cares ? "c-ares" : "libuv");
     if (srv->dns_cache_enabled) {
         fprintf(stderr, "SOCKS5 DNS cache enabled: %d entries ttl=%ds\n",
                 SOCKS5_DNS_CACHE_SIZE, SOCKS5_DNS_TTL_MS / 1000);
@@ -695,6 +916,24 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
 }
 
 void socks5_stop(socks5_server_t *srv) {
+    if (srv->dns_using_cares) {
+        if (srv->dns_timer_initialized &&
+            !uv_is_closing((uv_handle_t *)&srv->dns_timer)) {
+            uv_timer_stop(&srv->dns_timer);
+            uv_close((uv_handle_t *)&srv->dns_timer, server_close_cb);
+        }
+        while (srv->dns_sockets) {
+            socks5_dns_socket_t *w = srv->dns_sockets;
+            srv->dns_sockets = w->next;
+            uv_poll_stop(&w->poll);
+            uv_close((uv_handle_t *)&w->poll, cares_poll_close_cb);
+        }
+        ares_cancel(srv->dns_channel);
+        ares_destroy(srv->dns_channel);
+        ares_library_cleanup();
+        srv->dns_channel = NULL;
+        srv->dns_using_cares = 0;
+    }
     if (!uv_is_closing((uv_handle_t *)&srv->flush_check)) {
         uv_check_stop(&srv->flush_check);
         uv_close((uv_handle_t *)&srv->flush_check, server_close_cb);
