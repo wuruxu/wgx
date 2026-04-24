@@ -19,6 +19,7 @@ SRCS := \
 	$(SRCDIR)/timers.c      \
 	$(SRCDIR)/uapi.c        \
 	$(SRCDIR)/tcpstack.c    \
+	$(SRCDIR)/tcp_worker.c  \
 	$(SRCDIR)/socks5.c      \
 	$(SRCDIR)/conf.c
 
