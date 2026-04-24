@@ -408,16 +408,38 @@ int device_send_keepalive(wg_device_t *dev, wg_peer_t *peer) {
 }
 
 int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len) {
-    if (len < 20) return -1;
-    if ((pkt[0] >> 4) != 4) return -1; /* IPv4 only */
-    struct in_addr dst;
-    memcpy(&dst, pkt + 16, 4); /* destination IP at offset 16 */
-    wg_peer_t *peer = allowedips_lookup_v4(&dev->allowedips, &dst);
     if (dev->socks5_mode && dev->tcp_worker)
         return tcp_worker_enqueue_outbound(dev->tcp_worker, pkt, len);
+    if (len < 20)
+        return -1;
+
+    int version = pkt[0] >> 4;
+    wg_peer_t *peer = NULL;
+    if (version == 4) {
+        struct in_addr dst;
+        memcpy(&dst, pkt + 16, 4);
+        peer = allowedips_lookup_v4(&dev->allowedips, &dst);
+        if (!peer) {
+            wg_dbg(dev, "device_send_ip_packet: no peer for dst %s",
+                   inet_ntoa(dst));
+            return -1;
+        }
+    } else if (version == 6) {
+        if (len < 40)
+            return -1;
+        struct in6_addr dst;
+        char dst_str[INET6_ADDRSTRLEN];
+        memcpy(&dst, pkt + 24, sizeof(dst));
+        peer = allowedips_lookup_v6(&dev->allowedips, &dst);
+        if (!peer) {
+            inet_ntop(AF_INET6, &dst, dst_str, sizeof(dst_str));
+            wg_dbg(dev, "device_send_ip_packet: no peer for dst %s", dst_str);
+            return -1;
+        }
+    } else {
+        return -1;
+    }
     if (!peer) {
-        wg_dbg(dev, "device_send_ip_packet: no peer for dst %s",
-               inet_ntoa(dst));
         return -1;
     }
     return device_send_to_peer(dev, peer, pkt, len);

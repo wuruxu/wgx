@@ -9,16 +9,31 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/ip6.h>
 
 /* ---- Sequence arithmetic ------------------------------------------------ */
 static inline int seq_lt(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
 static inline int seq_le(uint32_t a, uint32_t b) { return (int32_t)(a - b) <= 0; }
 static inline int seq_gt(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
 
-static uint32_t conn_hash(uint32_t local_ip, uint32_t remote_ip,
+static uint32_t hash_addr32(const uint8_t *buf, size_t len) {
+    uint32_t h = 0;
+    for (size_t i = 0; i < len; i++)
+        h = (h * 33u) ^ buf[i];
+    return h;
+}
+
+static uint32_t conn_hash(int family,
+                          const void *local_addr, const void *remote_addr,
                           uint16_t local_port, uint16_t remote_port) {
-    uint32_t h = local_ip ^ remote_ip ^
+    uint32_t h = (uint32_t)family ^
                  ((uint32_t)local_port << 16) ^ remote_port;
+    if (family == AF_INET) {
+        h ^= *(const uint32_t *)local_addr ^ *(const uint32_t *)remote_addr;
+    } else {
+        h ^= hash_addr32(local_addr, sizeof(struct in6_addr));
+        h ^= hash_addr32(remote_addr, sizeof(struct in6_addr));
+    }
     h ^= h >> 16;
     return h & (WG_TCP_CONN_BUCKETS - 1);
 }
@@ -59,6 +74,21 @@ static uint16_t tcp4_checksum(uint32_t src_ip, uint32_t dst_ip,
     return cksum_fold(sum);
 }
 
+static uint16_t tcp6_checksum(const struct in6_addr *src_ip,
+                               const struct in6_addr *dst_ip,
+                               const uint8_t *tcp_seg, size_t tcp_len) {
+    uint8_t pseudo[40];
+    memset(pseudo, 0, sizeof(pseudo));
+    memcpy(pseudo + 0, src_ip, 16);
+    memcpy(pseudo + 16, dst_ip, 16);
+    uint32_t len_n = htonl((uint32_t)tcp_len);
+    memcpy(pseudo + 32, &len_n, 4);
+    pseudo[39] = 6;
+    uint32_t sum = cksum_add(pseudo, sizeof(pseudo), 0);
+    sum = cksum_add(tcp_seg, tcp_len, sum);
+    return cksum_fold(sum);
+}
+
 /* ---- ISN generation ----------------------------------------------------- */
 static uint32_t generate_isn(void) {
     struct timespec ts;
@@ -75,26 +105,39 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
     int is_syn = (flags & TCPF_SYN) != 0;
     size_t tcp_opts_len = is_syn ? 4 : 0; /* MSS option only on SYN */
     size_t tcp_hdr_len  = 20 + tcp_opts_len;
-    size_t ip_total     = 20 + tcp_hdr_len + datalen;
+    size_t ip_hdr_len   = (conn->family == AF_INET6) ? 40 : 20;
+    size_t ip_total     = ip_hdr_len + tcp_hdr_len + datalen;
 
-    uint8_t pkt[20 + 24 + WG_TCP_MSS];
+    uint8_t pkt[40 + 24 + WG_TCP_MSS];
     memset(pkt, 0, ip_total);
 
-    /* IPv4 header */
-    pkt[0] = 0x45;                        /* version=4, ihl=5 */
-    uint16_t tot_len = htons((uint16_t)ip_total);
-    memcpy(pkt + 2, &tot_len, 2);
-    uint16_t df = htons(0x4000);          /* DF bit */
-    memcpy(pkt + 6, &df, 2);
-    pkt[8]  = 64;                         /* TTL */
-    pkt[9]  = 6;                          /* IPPROTO_TCP */
-    memcpy(pkt + 12, &conn->local_ip,  4);
-    memcpy(pkt + 16, &conn->remote_ip, 4);
-    uint16_t ip_ck = ip4_checksum(pkt, 20);
-    memcpy(pkt + 10, &ip_ck, 2);
+    /* IP header */
+    uint8_t *tcp;
+    if (conn->family == AF_INET6) {
+        struct ip6_hdr *ip6 = (struct ip6_hdr *)pkt;
+        ip6->ip6_flow = htonl(6u << 28);
+        ip6->ip6_plen = htons((uint16_t)(tcp_hdr_len + datalen));
+        ip6->ip6_nxt = 6;
+        ip6->ip6_hlim = 64;
+        ip6->ip6_src = conn->local_ip6;
+        ip6->ip6_dst = conn->remote_ip6;
+        tcp = pkt + 40;
+    } else {
+        pkt[0] = 0x45;                        /* version=4, ihl=5 */
+        uint16_t tot_len = htons((uint16_t)ip_total);
+        memcpy(pkt + 2, &tot_len, 2);
+        uint16_t df = htons(0x4000);          /* DF bit */
+        memcpy(pkt + 6, &df, 2);
+        pkt[8]  = 64;                         /* TTL */
+        pkt[9]  = 6;                          /* IPPROTO_TCP */
+        memcpy(pkt + 12, &conn->local_ip,  4);
+        memcpy(pkt + 16, &conn->remote_ip, 4);
+        uint16_t ip_ck = ip4_checksum(pkt, 20);
+        memcpy(pkt + 10, &ip_ck, 2);
+        tcp = pkt + 20;
+    }
 
     /* TCP header */
-    uint8_t *tcp = pkt + 20;
     uint16_t sp = htons(conn->local_port);
     uint16_t dp = htons(conn->remote_port);
     uint32_t sn = htonl(seq);
@@ -123,8 +166,11 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
         memcpy(tcp + tcp_hdr_len, data, datalen);
 
     /* TCP checksum */
-    uint16_t tcp_ck = tcp4_checksum(conn->local_ip, conn->remote_ip,
-                                     tcp, tcp_hdr_len + datalen);
+    uint16_t tcp_ck = (conn->family == AF_INET6) ?
+        tcp6_checksum(&conn->local_ip6, &conn->remote_ip6,
+                      tcp, tcp_hdr_len + datalen) :
+        tcp4_checksum(conn->local_ip, conn->remote_ip,
+                      tcp, tcp_hdr_len + datalen);
     memcpy(tcp + 16, &tcp_ck, 2);
 
     device_send_ip_packet(conn->stack->dev, pkt, ip_total);
@@ -171,15 +217,21 @@ static void schedule_flush(tcp_conn_t *conn) {
 }
 
 static void bucket_insert(tcpstack_t *stack, tcp_conn_t *conn) {
-    uint32_t bucket = conn_hash(conn->local_ip, conn->remote_ip,
-                                conn->local_port, conn->remote_port);
+    uint32_t bucket = (conn->family == AF_INET6) ?
+        conn_hash(conn->family, &conn->local_ip6, &conn->remote_ip6,
+                  conn->local_port, conn->remote_port) :
+        conn_hash(conn->family, &conn->local_ip, &conn->remote_ip,
+                  conn->local_port, conn->remote_port);
     conn->hash_next = stack->conn_buckets[bucket];
     stack->conn_buckets[bucket] = conn;
 }
 
 static void bucket_remove(tcpstack_t *stack, tcp_conn_t *conn) {
-    uint32_t bucket = conn_hash(conn->local_ip, conn->remote_ip,
-                                conn->local_port, conn->remote_port);
+    uint32_t bucket = (conn->family == AF_INET6) ?
+        conn_hash(conn->family, &conn->local_ip6, &conn->remote_ip6,
+                  conn->local_port, conn->remote_port) :
+        conn_hash(conn->family, &conn->local_ip, &conn->remote_ip,
+                  conn->local_port, conn->remote_port);
     tcp_conn_t **pp = &stack->conn_buckets[bucket];
     while (*pp && *pp != conn)
         pp = &(*pp)->hash_next;
@@ -213,16 +265,24 @@ static void flush_remove(tcpstack_t *stack, tcp_conn_t *conn) {
 }
 
 static tcp_conn_t *bucket_lookup(tcpstack_t *stack,
-                                 uint32_t local_ip, uint32_t remote_ip,
+                                 int family,
+                                 const void *local_addr, const void *remote_addr,
                                  uint16_t local_port, uint16_t remote_port) {
-    uint32_t bucket = conn_hash(local_ip, remote_ip, local_port, remote_port);
+    uint32_t bucket = conn_hash(family, local_addr, remote_addr,
+                                local_port, remote_port);
     for (tcp_conn_t *c = stack->conn_buckets[bucket]; c; c = c->hash_next) {
         if (c->being_freed)
             continue;
-        if (c->local_ip    == local_ip &&
-            c->remote_ip   == remote_ip &&
-            c->local_port  == local_port &&
-            c->remote_port == remote_port)
+        if (c->family != family)
+            continue;
+        if (c->local_port != local_port || c->remote_port != remote_port)
+            continue;
+        if (family == AF_INET6) {
+            if (memcmp(&c->local_ip6, local_addr, sizeof(c->local_ip6)) == 0 &&
+                memcmp(&c->remote_ip6, remote_addr, sizeof(c->remote_ip6)) == 0)
+                return c;
+        } else if (c->local_ip == *(const uint32_t *)local_addr &&
+                   c->remote_ip == *(const uint32_t *)remote_addr)
             return c;
     }
     return NULL;
@@ -360,10 +420,15 @@ static void conn_destroy(tcp_conn_t *conn) {
 /* ---- Public API --------------------------------------------------------- */
 
 void tcpstack_init(tcpstack_t *stack, struct wg_device *dev,
-                   uint32_t local_ip, uv_loop_t *loop) {
+                   uint32_t local_ip, const struct in6_addr *local_ip6,
+                   uv_loop_t *loop) {
     memset(stack, 0, sizeof(*stack));
     stack->dev       = dev;
     stack->local_ip  = local_ip;
+    if (local_ip6) {
+        stack->local_ip6 = *local_ip6;
+        stack->local_ip6_set = 1;
+    }
     stack->loop      = loop;
     stack->next_port = 32768;
     uv_check_init(loop, &stack->flush_check);
@@ -388,7 +453,8 @@ void tcpstack_free(tcpstack_t *stack) {
 }
 
 tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
-                              uint32_t remote_ip, uint16_t remote_port,
+                              int family, const void *remote_addr,
+                              uint16_t remote_port,
                               tcp_connect_cb on_connect,
                               tcp_data_cb    on_data,
                               tcp_close_cb   on_close,
@@ -397,8 +463,18 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     if (!conn) return NULL;
 
     conn->stack       = stack;
-    conn->local_ip    = stack->local_ip;
-    conn->remote_ip   = remote_ip;
+    conn->family      = family;
+    if (family == AF_INET6) {
+        if (!stack->local_ip6_set)
+            goto fail;
+        conn->local_ip6 = stack->local_ip6;
+        conn->remote_ip6 = *(const struct in6_addr *)remote_addr;
+    } else if (family == AF_INET) {
+        conn->local_ip = stack->local_ip;
+        conn->remote_ip = *(const uint32_t *)remote_addr;
+    } else {
+        goto fail;
+    }
     conn->remote_port = remote_port;
     conn->on_connect  = on_connect;
     conn->on_data     = on_data;
@@ -432,6 +508,10 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
 
     uv_timer_start(&conn->retransmit_timer, retransmit_cb, WG_TCP_RETRANSMIT_MS, 0);
     return conn;
+
+fail:
+    free(conn);
+    return NULL;
 }
 
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {
@@ -474,47 +554,65 @@ void tcp_close(tcp_conn_t *conn) {
 
 /* ---- Inbound packet processing ------------------------------------------ */
 void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
-    /* Minimum: 20-byte IP + 20-byte TCP */
     if (len < 40) return;
-    if ((ip_pkt[0] >> 4) != 4) return; /* IPv4 only */
 
-    uint8_t ihl = (ip_pkt[0] & 0x0f) * 4;
-    if (ihl < 20 || ihl > len) return;
-    if (ip_pkt[9] != 6) return; /* TCP only */
+    int family;
+    const uint8_t *tcp;
+    size_t tcp_len;
+    uint32_t src_ip = 0, dst_ip = 0;
+    struct in6_addr src_ip6, dst_ip6;
+    memset(&src_ip6, 0, sizeof(src_ip6));
+    memset(&dst_ip6, 0, sizeof(dst_ip6));
 
-    uint16_t ip_total;
-    memcpy(&ip_total, ip_pkt + 2, 2);
-    ip_total = ntohs(ip_total);
-    if (ip_total > len) return;
-
-    uint32_t src_ip, dst_ip;
-    memcpy(&src_ip, ip_pkt + 12, 4);
-    memcpy(&dst_ip, ip_pkt + 16, 4);
-
-    /* Must be destined for our VPN IP */
-    if (dst_ip != stack->local_ip) return;
-
-    const uint8_t *tcp = ip_pkt + ihl;
-    size_t tcp_len = ip_total - ihl;
-    if (tcp_len < 20) return;
+    if ((ip_pkt[0] >> 4) == 6) {
+        if (len < sizeof(struct ip6_hdr) + 20) return;
+        const struct ip6_hdr *ip6 = (const struct ip6_hdr *)ip_pkt;
+        if (ip6->ip6_nxt != 6) return;
+        family = AF_INET6;
+        tcp = ip_pkt + sizeof(struct ip6_hdr);
+        tcp_len = ntohs(ip6->ip6_plen);
+        if (sizeof(struct ip6_hdr) + tcp_len > len || tcp_len < 20) return;
+        src_ip6 = ip6->ip6_src;
+        dst_ip6 = ip6->ip6_dst;
+        if (!stack->local_ip6_set ||
+            memcmp(&dst_ip6, &stack->local_ip6, sizeof(dst_ip6)) != 0)
+            return;
+    } else if ((ip_pkt[0] >> 4) == 4) {
+        uint8_t ihl = (ip_pkt[0] & 0x0f) * 4;
+        if (ihl < 20 || ihl > len) return;
+        if (ip_pkt[9] != 6) return;
+        uint16_t ip_total;
+        memcpy(&ip_total, ip_pkt + 2, 2);
+        ip_total = ntohs(ip_total);
+        if (ip_total > len) return;
+        family = AF_INET;
+        memcpy(&src_ip, ip_pkt + 12, 4);
+        memcpy(&dst_ip, ip_pkt + 16, 4);
+        if (dst_ip != stack->local_ip) return;
+        tcp = ip_pkt + ihl;
+        tcp_len = ip_total - ihl;
+        if (tcp_len < 20) return;
+    } else {
+        return;
+    }
 
     uint8_t data_off = (tcp[12] >> 4) * 4;
     if (data_off < 20 || data_off > tcp_len) return;
 
     uint16_t src_port_n, dst_port_n;
-    memcpy(&src_port_n, tcp + 0, 2);
-    memcpy(&dst_port_n, tcp + 2, 2);
+    memcpy(&src_port_n, tcp + 0, sizeof(src_port_n));
+    memcpy(&dst_port_n, tcp + 2, sizeof(dst_port_n));
     uint16_t src_port = ntohs(src_port_n);
     uint16_t dst_port = ntohs(dst_port_n);
 
     uint32_t seq_n, ack_n;
-    memcpy(&seq_n, tcp + 4, 2 * 2); /* 4 bytes */
-    memcpy(&ack_n, tcp + 8, 4);
+    memcpy(&seq_n, tcp + 4, sizeof(seq_n));
+    memcpy(&ack_n, tcp + 8, sizeof(ack_n));
     uint32_t seq = ntohl(seq_n);
     uint32_t ack = ntohl(ack_n);
 
     uint16_t remote_window_n;
-    memcpy(&remote_window_n, tcp + 14, 2);
+    memcpy(&remote_window_n, tcp + 14, sizeof(remote_window_n));
     uint16_t remote_window = ntohs(remote_window_n);
 
     uint8_t flags = tcp[13];
@@ -524,7 +622,9 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
     size_t         payload_len = tcp_len - data_off;
 
     /* Find matching connection */
-    tcp_conn_t *conn = bucket_lookup(stack, dst_ip, src_ip, dst_port, src_port);
+    tcp_conn_t *conn = (family == AF_INET6) ?
+        bucket_lookup(stack, family, &dst_ip6, &src_ip6, dst_port, src_port) :
+        bucket_lookup(stack, family, &dst_ip, &src_ip, dst_port, src_port);
     if (!conn) return;
 
     /* RST: hard close */

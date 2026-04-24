@@ -272,6 +272,8 @@ typedef struct wg_device {
     /* SOCKS5 proxy mode */
     int                 socks5_mode;
     uint32_t            wg_local_ip;    /* our VPN IP, network byte order */
+    struct in6_addr     wg_local_ip6;   /* our VPN IPv6, network byte order */
+    int                 wg_local_ip6_set;
     struct tcpstack    *tcpstack;
     struct socks5_server *socks5_server;
     struct tcp_worker  *tcp_worker;

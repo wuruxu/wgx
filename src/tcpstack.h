@@ -5,6 +5,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <netinet/in.h>
 #include <uv.h>
 
 struct wg_device;
@@ -45,8 +46,11 @@ typedef struct tcp_conn {
     struct tcp_conn *hash_next;
     struct tcp_conn *flush_next;
 
+    int      family;
     uint32_t local_ip;    /* network byte order */
     uint32_t remote_ip;   /* network byte order */
+    struct in6_addr local_ip6;
+    struct in6_addr remote_ip6;
     uint16_t local_port;  /* host byte order */
     uint16_t remote_port; /* host byte order */
 
@@ -81,6 +85,8 @@ typedef struct tcp_conn {
 typedef struct tcpstack {
     struct wg_device *dev;
     uint32_t          local_ip;   /* network byte order */
+    struct in6_addr   local_ip6;  /* network byte order */
+    int               local_ip6_set;
     uv_loop_t        *loop;
     tcp_conn_t       *conns;
     tcp_conn_t       *conn_buckets[WG_TCP_CONN_BUCKETS];
@@ -93,14 +99,15 @@ typedef struct tcpstack {
 
 /* Initialize / free the stack. local_ip in network byte order. */
 void tcpstack_init(tcpstack_t *stack, struct wg_device *dev,
-                   uint32_t local_ip, uv_loop_t *loop);
+                   uint32_t local_ip, const struct in6_addr *local_ip6,
+                   uv_loop_t *loop);
 void tcpstack_free(tcpstack_t *stack);
 
-/* Initiate a TCP connection to remote_ip:remote_port (both network/host order
- * respectively — remote_ip is NBO, remote_port is HBO).
- * Returns the connection or NULL on alloc failure. */
+/* Initiate a TCP connection to remote address. remote_addr points to
+ * struct in_addr or struct in6_addr based on family. remote_port is HBO. */
 tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
-                              uint32_t remote_ip, uint16_t remote_port,
+                              int family, const void *remote_addr,
+                              uint16_t remote_port,
                               tcp_connect_cb on_connect,
                               tcp_data_cb    on_data,
                               tcp_close_cb   on_close,

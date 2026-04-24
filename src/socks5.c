@@ -631,11 +631,14 @@ static void resolve_complete(socks5_conn_t *sc, const char *domain,
     } else if (family == AF_INET6 && ip6) {
         sc->target_ip = 0;
         sc->target_ip6 = *ip6;
-        wg_dbg(sc->stack->dev, "s5 conn=%p resolved IPv6 for %s but tcpstack is IPv4-only",
-               (void *)sc, domain);
-        send_reply(sc, S5_REP_FAIL);
-        socks5_conn_close(sc);
-        return;
+        if (!sc->stack->local_ip6_set) {
+            wg_dbg(sc->stack->dev,
+                   "s5 conn=%p resolved IPv6 for %s but no --wg-addr6 configured",
+                   (void *)sc, domain);
+            send_reply(sc, S5_REP_FAIL);
+            socks5_conn_close(sc);
+            return;
+        }
     }
     sc->state = S5_CONNECTING;
     do_connect(sc);
@@ -643,8 +646,11 @@ static void resolve_complete(socks5_conn_t *sc, const char *domain,
 
 /* ---- Initiate TCP connection to target ---------------------------------- */
 static void do_connect(socks5_conn_t *sc) {
+    const void *addr = (sc->target_family == AF_INET6) ?
+        (const void *)&sc->target_ip6 : (const void *)&sc->target_ip;
     sc->wg_conn = tcpstack_connect(sc->stack,
-                                    sc->target_ip,
+                                    sc->target_family,
+                                    addr,
                                     sc->target_port,
                                     wg_on_connect,
                                     wg_on_data,
@@ -764,9 +770,15 @@ static void process_connect_request(socks5_conn_t *sc) {
         }
 
     } else {
-        /* IPv6 not supported */
-        send_reply(sc, S5_REP_FAIL);
-        socks5_conn_close(sc);
+        if (!sc->stack->local_ip6_set) {
+            send_reply(sc, S5_REP_FAIL);
+            socks5_conn_close(sc);
+            return;
+        }
+        sc->target_family = AF_INET6;
+        memcpy(&sc->target_ip6, sc->rxbuf + 4, sizeof(sc->target_ip6));
+        sc->state = S5_CONNECTING;
+        do_connect(sc);
     }
 }
 

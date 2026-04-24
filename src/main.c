@@ -38,7 +38,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [-f|--foreground] INTERFACE-NAME\n"
-            "  %s --socks5 ADDR:PORT --wg-addr VPN-IP --config WG-CONF\n",
+            "  %s --socks5 ADDR:PORT --wg-addr VPN-IP [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
             prog, prog);
 }
 
@@ -107,6 +107,7 @@ int main(int argc, char *argv[]) {
     char        socks5_bind[64] = "127.0.0.1";
     uint16_t    socks5_port  = 0;
     char        wg_addr_str[64] = "";
+    char        wg_addr6_str[80] = "";
     const char *config_path  = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -126,6 +127,10 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "--wg-addr") == 0) {
             if (++i >= argc) { print_usage(argv[0]); return 1; }
             strncpy(wg_addr_str, argv[i], sizeof(wg_addr_str) - 1);
+
+        } else if (strcmp(argv[i], "--wg-addr6") == 0) {
+            if (++i >= argc) { print_usage(argv[0]); return 1; }
+            strncpy(wg_addr6_str, argv[i], sizeof(wg_addr6_str) - 1);
 
         } else if (strcmp(argv[i], "--config") == 0) {
             if (++i >= argc) { print_usage(argv[0]); return 1; }
@@ -195,6 +200,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         g_device.wg_local_ip = wg_ip.s_addr; /* network byte order */
+        if (wg_addr6_str[0] != '\0') {
+            if (inet_pton(AF_INET6, wg_addr6_str, &g_device.wg_local_ip6) != 1) {
+                fprintf(stderr, "Invalid --wg-addr6: %s\n", wg_addr6_str);
+                return 1;
+            }
+            g_device.wg_local_ip6_set = 1;
+        }
 
         if (load_wg_config(&g_device, config_path) < 0) {
             fprintf(stderr, "Failed to load config: %s\n", config_path);
