@@ -9,11 +9,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define TCP_WORKER_QUEUE_CAP   2048
+#define TCP_WORKER_POOL_SIZE   (TCP_WORKER_QUEUE_CAP * 2)
+#define TCP_WORKER_LOG_STEP    256
+#define TCP_WORKER_BATCH_LIMIT 128
+
 typedef struct packet_msg {
     struct packet_msg *next;
     size_t             len;
-    uint8_t            data[];
+    uint8_t            data[WG_MAX_MESSAGE_SIZE];
 } packet_msg_t;
+
+typedef struct {
+    const char   *name;
+    packet_msg_t *slots[TCP_WORKER_QUEUE_CAP];
+    size_t        head;
+    size_t        len;
+    uint64_t      enqueued;
+    uint64_t      dequeued;
+    uint64_t      dropped;
+    uint64_t      high_water;
+} packet_ring_t;
 
 struct tcp_worker {
     wg_device_t      *dev;
@@ -25,10 +41,11 @@ struct tcp_worker {
     socks5_server_t   socks5;
     pthread_mutex_t   inbound_lock;
     pthread_mutex_t   outbound_lock;
-    packet_msg_t     *inbound_head;
-    packet_msg_t     *inbound_tail;
-    packet_msg_t     *outbound_head;
-    packet_msg_t     *outbound_tail;
+    packet_ring_t     inbound;
+    packet_ring_t     outbound;
+    pthread_mutex_t   pool_lock;
+    packet_msg_t     *free_list;
+    packet_msg_t     *pool_nodes;
     pthread_mutex_t   state_lock;
     pthread_cond_t    state_cond;
     int               started;
@@ -38,39 +55,103 @@ struct tcp_worker {
     uint16_t          bind_port;
 };
 
-static packet_msg_t *packet_msg_new(const uint8_t *pkt, size_t len) {
-    packet_msg_t *msg = malloc(sizeof(*msg) + len);
-    if (!msg)
-        return NULL;
-    msg->next = NULL;
-    msg->len = len;
-    if (len > 0)
-        memcpy(msg->data, pkt, len);
+static void packet_ring_init(packet_ring_t *ring, const char *name) {
+    memset(ring, 0, sizeof(*ring));
+    ring->name = name;
+}
+
+static void log_queue_high_water(tcp_worker_t *worker, packet_ring_t *ring) {
+    if ((ring->high_water % TCP_WORKER_LOG_STEP) != 0 &&
+        ring->high_water != TCP_WORKER_QUEUE_CAP)
+        return;
+    wg_dbg(worker->dev,
+           "tcp_worker %s_queue high_water=%llu/%d drops=%llu enq=%llu deq=%llu",
+           ring->name,
+           (unsigned long long)ring->high_water,
+           TCP_WORKER_QUEUE_CAP,
+           (unsigned long long)ring->dropped,
+           (unsigned long long)ring->enqueued,
+           (unsigned long long)ring->dequeued);
+}
+
+static void log_queue_drop(tcp_worker_t *worker, packet_ring_t *ring) {
+    if (ring->dropped != 1 && (ring->dropped % TCP_WORKER_LOG_STEP) != 0)
+        return;
+    wg_err(worker->dev,
+           "tcp_worker %s_queue full len=%zu/%d drops=%llu",
+           ring->name,
+           ring->len,
+           TCP_WORKER_QUEUE_CAP,
+           (unsigned long long)ring->dropped);
+}
+
+static packet_msg_t *pool_acquire(tcp_worker_t *worker) {
+    pthread_mutex_lock(&worker->pool_lock);
+    packet_msg_t *msg = worker->free_list;
+    if (msg)
+        worker->free_list = msg->next;
+    pthread_mutex_unlock(&worker->pool_lock);
     return msg;
 }
 
-static void queue_push(packet_msg_t **head, packet_msg_t **tail, packet_msg_t *msg) {
-    msg->next = NULL;
-    if (*tail)
-        (*tail)->next = msg;
-    else
-        *head = msg;
-    *tail = msg;
+static void pool_release(tcp_worker_t *worker, packet_msg_t *msg) {
+    msg->len = 0;
+    pthread_mutex_lock(&worker->pool_lock);
+    msg->next = worker->free_list;
+    worker->free_list = msg;
+    pthread_mutex_unlock(&worker->pool_lock);
 }
 
-static packet_msg_t *queue_take_all(packet_msg_t **head, packet_msg_t **tail) {
-    packet_msg_t *list = *head;
-    *head = NULL;
-    *tail = NULL;
-    return list;
-}
-
-static void free_packet_list(packet_msg_t *msg) {
-    while (msg) {
-        packet_msg_t *next = msg->next;
-        free(msg);
-        msg = next;
+static int ring_push(tcp_worker_t *worker, packet_ring_t *ring,
+                     packet_msg_t *msg, int *was_empty) {
+    if (ring->len == TCP_WORKER_QUEUE_CAP) {
+        ring->dropped++;
+        log_queue_drop(worker, ring);
+        return -1;
     }
+
+    size_t idx = (ring->head + ring->len) % TCP_WORKER_QUEUE_CAP;
+    *was_empty = (ring->len == 0);
+    ring->slots[idx] = msg;
+    ring->len++;
+    ring->enqueued++;
+    if (ring->len > ring->high_water) {
+        ring->high_water = ring->len;
+        log_queue_high_water(worker, ring);
+    }
+    return 0;
+}
+
+static packet_msg_t *ring_pop(packet_ring_t *ring) {
+    if (ring->len == 0)
+        return NULL;
+
+    packet_msg_t *msg = ring->slots[ring->head];
+    ring->slots[ring->head] = NULL;
+    ring->head = (ring->head + 1) % TCP_WORKER_QUEUE_CAP;
+    ring->len--;
+    ring->dequeued++;
+    return msg;
+}
+
+static int ring_has_items(packet_ring_t *ring) {
+    return ring->len > 0;
+}
+
+static void log_worker_stats(tcp_worker_t *worker, const char *reason) {
+    wg_dbg(worker->dev,
+           "tcp_worker stats reason=%s in_len=%zu in_high=%llu in_drop=%llu in_enq=%llu in_deq=%llu out_len=%zu out_high=%llu out_drop=%llu out_enq=%llu out_deq=%llu",
+           reason,
+           worker->inbound.len,
+           (unsigned long long)worker->inbound.high_water,
+           (unsigned long long)worker->inbound.dropped,
+           (unsigned long long)worker->inbound.enqueued,
+           (unsigned long long)worker->inbound.dequeued,
+           worker->outbound.len,
+           (unsigned long long)worker->outbound.high_water,
+           (unsigned long long)worker->outbound.dropped,
+           (unsigned long long)worker->outbound.enqueued,
+           (unsigned long long)worker->outbound.dequeued);
 }
 
 static int device_send_ip_packet_local(wg_device_t *dev, const uint8_t *pkt, size_t len) {
@@ -89,38 +170,63 @@ static int device_send_ip_packet_local(wg_device_t *dev, const uint8_t *pkt, siz
     return device_send_to_peer(dev, peer, pkt, len);
 }
 
+static size_t drain_outbound_batch(tcp_worker_t *worker, size_t limit, int *more) {
+    size_t processed = 0;
+    *more = 0;
+
+    while (processed < limit) {
+        pthread_mutex_lock(&worker->outbound_lock);
+        packet_msg_t *msg = ring_pop(&worker->outbound);
+        *more = ring_has_items(&worker->outbound);
+        pthread_mutex_unlock(&worker->outbound_lock);
+        if (!msg)
+            break;
+
+        device_send_ip_packet_local(worker->dev, msg->data, msg->len);
+        pool_release(worker, msg);
+        processed++;
+    }
+    return processed;
+}
+
+static size_t drain_inbound_batch(tcp_worker_t *worker, size_t limit, int *more) {
+    size_t processed = 0;
+    *more = 0;
+
+    while (processed < limit) {
+        pthread_mutex_lock(&worker->inbound_lock);
+        packet_msg_t *msg = ring_pop(&worker->inbound);
+        *more = ring_has_items(&worker->inbound);
+        pthread_mutex_unlock(&worker->inbound_lock);
+        if (!msg)
+            break;
+
+        tcpstack_input(&worker->stack, msg->data, msg->len);
+        pool_release(worker, msg);
+        processed++;
+    }
+    return processed;
+}
+
 static void main_async_cb(uv_async_t *handle) {
     tcp_worker_t *worker = handle->data;
-
-    pthread_mutex_lock(&worker->outbound_lock);
-    packet_msg_t *list = queue_take_all(&worker->outbound_head, &worker->outbound_tail);
-    pthread_mutex_unlock(&worker->outbound_lock);
-
-    while (list) {
-        packet_msg_t *next = list->next;
-        device_send_ip_packet_local(worker->dev, list->data, list->len);
-        free(list);
-        list = next;
-    }
+    int more = 0;
+    drain_outbound_batch(worker, TCP_WORKER_BATCH_LIMIT, &more);
+    if (more)
+        uv_async_send(&worker->main_async);
 }
 
 static void worker_async_cb(uv_async_t *handle) {
     tcp_worker_t *worker = handle->data;
-
-    pthread_mutex_lock(&worker->inbound_lock);
-    packet_msg_t *list = queue_take_all(&worker->inbound_head, &worker->inbound_tail);
-    pthread_mutex_unlock(&worker->inbound_lock);
-
-    while (list) {
-        packet_msg_t *next = list->next;
-        tcpstack_input(&worker->stack, list->data, list->len);
-        free(list);
-        list = next;
-    }
+    int more = 0;
+    drain_inbound_batch(worker, TCP_WORKER_BATCH_LIMIT, &more);
+    if (more)
+        uv_async_send(&worker->worker_async);
 
     if (!worker->stop_requested)
         return;
 
+    log_worker_stats(worker, "worker_stop");
     socks5_stop(&worker->socks5);
     tcpstack_free(&worker->stack);
     if (!uv_is_closing((uv_handle_t *)&worker->worker_async))
@@ -181,10 +287,20 @@ int tcp_worker_start(tcp_worker_t **out,
     worker->dev = dev;
     worker->bind_port = port;
     strncpy(worker->bind_addr, bind_addr, sizeof(worker->bind_addr) - 1);
+    packet_ring_init(&worker->inbound, "inbound");
+    packet_ring_init(&worker->outbound, "outbound");
     pthread_mutex_init(&worker->inbound_lock, NULL);
     pthread_mutex_init(&worker->outbound_lock, NULL);
+    pthread_mutex_init(&worker->pool_lock, NULL);
     pthread_mutex_init(&worker->state_lock, NULL);
     pthread_cond_init(&worker->state_cond, NULL);
+    worker->pool_nodes = calloc(TCP_WORKER_POOL_SIZE, sizeof(*worker->pool_nodes));
+    if (!worker->pool_nodes)
+        goto fail;
+    for (size_t i = 0; i < TCP_WORKER_POOL_SIZE; i++) {
+        worker->pool_nodes[i].next = worker->free_list;
+        worker->free_list = &worker->pool_nodes[i];
+    }
 
     int ret = uv_async_init(dev->loop, &worker->main_async, main_async_cb);
     if (ret < 0)
@@ -219,8 +335,10 @@ fail:
     dev->tcp_worker = NULL;
     pthread_cond_destroy(&worker->state_cond);
     pthread_mutex_destroy(&worker->state_lock);
+    pthread_mutex_destroy(&worker->pool_lock);
     pthread_mutex_destroy(&worker->outbound_lock);
     pthread_mutex_destroy(&worker->inbound_lock);
+    free(worker->pool_nodes);
     free(worker);
     return -1;
 }
@@ -236,44 +354,62 @@ void tcp_worker_stop(tcp_worker_t *worker) {
     uv_close((uv_handle_t *)&worker->main_async, NULL);
     uv_run(worker->dev->loop, UV_RUN_NOWAIT);
 
-    pthread_mutex_lock(&worker->inbound_lock);
-    free_packet_list(queue_take_all(&worker->inbound_head, &worker->inbound_tail));
-    pthread_mutex_unlock(&worker->inbound_lock);
-
-    pthread_mutex_lock(&worker->outbound_lock);
-    free_packet_list(queue_take_all(&worker->outbound_head, &worker->outbound_tail));
-    pthread_mutex_unlock(&worker->outbound_lock);
+    log_worker_stats(worker, "main_stop");
 
     worker->dev->tcp_worker = NULL;
     pthread_cond_destroy(&worker->state_cond);
     pthread_mutex_destroy(&worker->state_lock);
+    pthread_mutex_destroy(&worker->pool_lock);
     pthread_mutex_destroy(&worker->outbound_lock);
     pthread_mutex_destroy(&worker->inbound_lock);
+    free(worker->pool_nodes);
     free(worker);
 }
 
 int tcp_worker_enqueue_inbound(tcp_worker_t *worker,
                                const uint8_t *pkt, size_t len) {
-    packet_msg_t *msg = packet_msg_new(pkt, len);
+    if (len > WG_MAX_MESSAGE_SIZE)
+        return -1;
+    packet_msg_t *msg = pool_acquire(worker);
     if (!msg)
         return -1;
+    msg->len = len;
+    if (len > 0)
+        memcpy(msg->data, pkt, len);
 
     pthread_mutex_lock(&worker->inbound_lock);
-    queue_push(&worker->inbound_head, &worker->inbound_tail, msg);
+    int was_empty = 0;
+    int ret = ring_push(worker, &worker->inbound, msg, &was_empty);
     pthread_mutex_unlock(&worker->inbound_lock);
-    uv_async_send(&worker->worker_async);
-    return 0;
+    if (ret < 0) {
+        pool_release(worker, msg);
+        return -1;
+    }
+    if (was_empty)
+        uv_async_send(&worker->worker_async);
+    return ret;
 }
 
 int tcp_worker_enqueue_outbound(tcp_worker_t *worker,
                                 const uint8_t *pkt, size_t len) {
-    packet_msg_t *msg = packet_msg_new(pkt, len);
+    if (len > WG_MAX_MESSAGE_SIZE)
+        return -1;
+    packet_msg_t *msg = pool_acquire(worker);
     if (!msg)
         return -1;
+    msg->len = len;
+    if (len > 0)
+        memcpy(msg->data, pkt, len);
 
     pthread_mutex_lock(&worker->outbound_lock);
-    queue_push(&worker->outbound_head, &worker->outbound_tail, msg);
+    int was_empty = 0;
+    int ret = ring_push(worker, &worker->outbound, msg, &was_empty);
     pthread_mutex_unlock(&worker->outbound_lock);
-    uv_async_send(&worker->main_async);
-    return 0;
+    if (ret < 0) {
+        pool_release(worker, msg);
+        return -1;
+    }
+    if (was_empty)
+        uv_async_send(&worker->main_async);
+    return ret;
 }

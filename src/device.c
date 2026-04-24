@@ -17,7 +17,10 @@
 #include <arpa/inet.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+
+#define WG_UDP_SOCKET_BUFFER_SIZE (4 * 1024 * 1024)
 
 /* ---- Logging ---- */
 void wg_log(wg_device_t *dev, int level, const char *fmt, ...) {
@@ -43,16 +46,94 @@ static uv_udp_t *udp_for_family(wg_device_t *dev, sa_family_t family) {
     return &dev->udp4;
 }
 
-typedef struct {
-    uv_udp_send_t req;
-    uv_buf_t      buf;
-} udp_send_req_t;
+static void configure_udp_socket_buffers(wg_device_t *dev, uv_udp_t *udp,
+                                         const char *label) {
+    uv_os_fd_t fd;
+    if (uv_fileno((const uv_handle_t *)udp, &fd) < 0)
+        return;
+
+    int size = WG_UDP_SOCKET_BUFFER_SIZE;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size)) < 0) {
+        wg_dbg(dev, "%s SO_SNDBUF set failed", label);
+    }
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size)) < 0) {
+        wg_dbg(dev, "%s SO_RCVBUF set failed", label);
+    }
+}
+
+static wg_tx_buffer_t *tx_buffer_acquire(wg_device_t *dev) {
+    pthread_mutex_lock(&dev->tx_buffer_pool_lock);
+    wg_tx_buffer_t *buf = dev->tx_buffer_pool;
+    if (buf)
+        dev->tx_buffer_pool = buf->next;
+    pthread_mutex_unlock(&dev->tx_buffer_pool_lock);
+
+    if (buf) {
+        buf->next = NULL;
+        return buf;
+    }
+
+    buf = calloc(1, sizeof(*buf));
+    if (!buf)
+        return NULL;
+    buf->pooled = 0;
+    return buf;
+}
+
+static void tx_buffer_release(wg_device_t *dev, wg_tx_buffer_t *buf) {
+    if (!buf)
+        return;
+    if (!buf->pooled) {
+        free(buf);
+        return;
+    }
+
+    pthread_mutex_lock(&dev->tx_buffer_pool_lock);
+    buf->next = dev->tx_buffer_pool;
+    dev->tx_buffer_pool = buf;
+    pthread_mutex_unlock(&dev->tx_buffer_pool_lock);
+}
+
+static wg_udp_send_req_t *udp_send_req_acquire(wg_device_t *dev) {
+    pthread_mutex_lock(&dev->udp_send_req_pool_lock);
+    wg_udp_send_req_t *req = dev->udp_send_req_pool;
+    if (req)
+        dev->udp_send_req_pool = req->next;
+    pthread_mutex_unlock(&dev->udp_send_req_pool_lock);
+
+    if (req) {
+        req->next = NULL;
+        return req;
+    }
+
+    req = calloc(1, sizeof(*req));
+    if (!req)
+        return NULL;
+    req->pooled = 0;
+    return req;
+}
+
+static void udp_send_req_release(wg_device_t *dev, wg_udp_send_req_t *req) {
+    if (!req)
+        return;
+    req->buf.base = NULL;
+    req->buf.len = 0;
+    if (!req->pooled) {
+        free(req);
+        return;
+    }
+
+    pthread_mutex_lock(&dev->udp_send_req_pool_lock);
+    req->next = dev->udp_send_req_pool;
+    dev->udp_send_req_pool = req;
+    pthread_mutex_unlock(&dev->udp_send_req_pool_lock);
+}
 
 static void udp_send_done(uv_udp_send_t *req, int status) {
-    udp_send_req_t *sreq = (udp_send_req_t *)req;
+    wg_udp_send_req_t *sreq = (wg_udp_send_req_t *)req;
     (void)status;
-    free(sreq->buf.base);
-    free(sreq);
+    wg_device_t *dev = req->handle->data;
+    udp_send_req_release(dev, sreq);
 }
 
 static int udp_send_copy(wg_device_t *dev, const struct sockaddr *addr,
@@ -64,21 +145,20 @@ static int udp_send_copy(wg_device_t *dev, const struct sockaddr *addr,
     if (ret != UV_EAGAIN)
         return ret;
 
-    udp_send_req_t *sreq = calloc(1, sizeof(*sreq));
+    if (len > WG_TX_BUFFER_SIZE)
+        return UV_EMSGSIZE;
+
+    wg_udp_send_req_t *sreq = udp_send_req_acquire(dev);
     if (!sreq)
         return UV_ENOMEM;
-    sreq->buf.base = malloc(len);
-    if (!sreq->buf.base) {
-        free(sreq);
-        return UV_ENOMEM;
-    }
-    memcpy(sreq->buf.base, data, len);
+
+    memcpy(sreq->data, data, len);
+    sreq->buf.base = (char *)sreq->data;
     sreq->buf.len = len;
     ret = uv_udp_send(&sreq->req, udp_for_family(dev, family),
                       &sreq->buf, 1, addr, udp_send_done);
     if (ret < 0) {
-        free(sreq->buf.base);
-        free(sreq);
+        udp_send_req_release(dev, sreq);
     }
     return ret;
 }
@@ -264,8 +344,9 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     /* Build transport header */
     size_t padded = device_pad_packet(pktlen);
     size_t total  = MSG_TRANSPORT_HDR_SIZE + padded + WG_AEAD_TAG_LEN;
-    uint8_t *buf  = malloc(total);
-    if (!buf) return -1;
+    wg_tx_buffer_t *txb = tx_buffer_acquire(dev);
+    if (!txb) return -1;
+    uint8_t *buf = txb->data;
     memset(buf, 0, total);
 
     msg_transport_hdr_t *hdr = (msg_transport_hdr_t *)buf;
@@ -288,7 +369,7 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     if (wg_chacha20poly1305_encrypt(ciphertext, kp->send_key, nonce_bytes,
                                      plaintext, padded,
                                      NULL, 0) < 0) {
-        free(buf);
+        tx_buffer_release(dev, txb);
         return -1;
     }
 
@@ -299,12 +380,15 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     memcpy(&ep, &peer->endpoint, ep_len);
     pthread_mutex_unlock(&peer->endpoint_lock);
 
-    if (ep_len == 0) { free(buf); return -1; }
+    if (ep_len == 0) {
+        tx_buffer_release(dev, txb);
+        return -1;
+    }
 
     /* Send via UDP - choose socket based on endpoint address family */
     int sent = udp_send_copy(dev, (const struct sockaddr *)&ep, ep.ss_family,
                              buf, total);
-    free(buf);
+    tx_buffer_release(dev, txb);
     if (sent < 0)
         wg_dbg(dev, "UDP send error: %s", uv_strerror(sent));
     else
@@ -726,6 +810,27 @@ int device_init(wg_device_t *dev, const char *ifname, uv_loop_t *loop) {
     pthread_rwlock_init(&dev->identity_lock, NULL);
     pthread_rwlock_init(&dev->peers_lock, NULL);
     pthread_mutex_init(&dev->cookie_checker.mutex, NULL);
+    pthread_mutex_init(&dev->tx_buffer_pool_lock, NULL);
+    pthread_mutex_init(&dev->udp_send_req_pool_lock, NULL);
+
+    dev->tx_buffer_nodes = calloc(WG_TX_BUFFER_POOL_SIZE, sizeof(*dev->tx_buffer_nodes));
+    if (!dev->tx_buffer_nodes)
+        return -1;
+    for (size_t i = 0; i < WG_TX_BUFFER_POOL_SIZE; i++) {
+        dev->tx_buffer_nodes[i].pooled = 1;
+        dev->tx_buffer_nodes[i].next = dev->tx_buffer_pool;
+        dev->tx_buffer_pool = &dev->tx_buffer_nodes[i];
+    }
+
+    dev->udp_send_req_nodes = calloc(WG_UDP_SEND_REQ_POOL_SIZE,
+                                     sizeof(*dev->udp_send_req_nodes));
+    if (!dev->udp_send_req_nodes)
+        return -1;
+    for (size_t i = 0; i < WG_UDP_SEND_REQ_POOL_SIZE; i++) {
+        dev->udp_send_req_nodes[i].pooled = 1;
+        dev->udp_send_req_nodes[i].next = dev->udp_send_req_pool;
+        dev->udp_send_req_pool = &dev->udp_send_req_nodes[i];
+    }
 
     index_table_init(&dev->index_table);
     allowedips_init(&dev->allowedips);
@@ -765,6 +870,7 @@ int device_start(wg_device_t *dev) {
             wg_err(dev, "IPv4 UDP bind error: %s", uv_strerror(ret4));
             return -1;
         }
+        configure_udp_socket_buffers(dev, &dev->udp4, "udp4");
         /* Get actual port (if 0 was passed) */
         struct sockaddr_storage local;
         int namelen = sizeof(local);
@@ -789,6 +895,7 @@ int device_start(wg_device_t *dev) {
             uv_close((uv_handle_t *)&dev->udp6, NULL);
         } else {
             dev->udp6_active = 1;
+            configure_udp_socket_buffers(dev, &dev->udp6, "udp6");
             uv_udp_recv_start(&dev->udp6, on_udp_alloc, on_udp_recv);
         }
     }
@@ -854,7 +961,11 @@ void device_free(wg_device_t *dev) {
     device_remove_all_peers(dev);
     allowedips_free(&dev->allowedips);
     index_table_free(&dev->index_table);
+    free(dev->udp_send_req_nodes);
+    free(dev->tx_buffer_nodes);
     pthread_mutex_destroy(&dev->cookie_checker.mutex);
+    pthread_mutex_destroy(&dev->udp_send_req_pool_lock);
+    pthread_mutex_destroy(&dev->tx_buffer_pool_lock);
     pthread_rwlock_destroy(&dev->identity_lock);
     pthread_rwlock_destroy(&dev->peers_lock);
 }

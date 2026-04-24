@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #include <arpa/inet.h>
 
 /* ---- SOCKS5 constants --------------------------------------------------- */
@@ -20,6 +21,7 @@
 #define S5_REP_OK       0
 #define S5_REP_FAIL     1
 #define S5_REP_NOCONN   5
+#define SOCKS5_DNS_TTL_MS (30 * 1000)
 
 typedef enum {
     S5_INIT = 0,
@@ -91,6 +93,12 @@ typedef struct socks5_conn {
     tcpstack_t    *stack;
 } socks5_conn_t;
 
+typedef struct {
+    uv_getaddrinfo_t req;
+    socks5_conn_t   *sc;
+    char             domain[256];
+} resolve_req_ctx_t;
+
 /* ---- Forward declarations ----------------------------------------------- */
 static void socks5_conn_close(socks5_conn_t *sc);
 static void do_connect(socks5_conn_t *sc);
@@ -98,6 +106,61 @@ static void client_read_established(socks5_conn_t *sc,
                                      const uint8_t *data, size_t len);
 static void client_flush(socks5_conn_t *sc);
 static void flush_check_cb(uv_check_t *handle);
+static void resolve_complete(socks5_conn_t *sc, const char *domain,
+                             int status, uint32_t ip);
+
+static int dns_cache_lookup(socks5_server_t *srv, const char *domain,
+                            uint64_t now_ms, uint32_t *ip_out) {
+    if (!srv->dns_cache_enabled)
+        return -1;
+    for (size_t i = 0; i < SOCKS5_DNS_CACHE_SIZE; i++) {
+        socks5_dns_cache_entry_t *entry = &srv->dns_cache[i];
+        if (!entry->valid)
+            continue;
+        if (entry->expires_at_ms <= now_ms) {
+            entry->valid = 0;
+            continue;
+        }
+        if (strcmp(entry->domain, domain) != 0)
+            continue;
+        entry->last_used_ms = now_ms;
+        *ip_out = entry->ip;
+        return 0;
+    }
+    return -1;
+}
+
+static void dns_cache_store(socks5_server_t *srv, const char *domain,
+                            uint32_t ip, uint64_t now_ms) {
+    if (!srv->dns_cache_enabled)
+        return;
+
+    socks5_dns_cache_entry_t *slot = NULL;
+    socks5_dns_cache_entry_t *oldest = &srv->dns_cache[0];
+    for (size_t i = 0; i < SOCKS5_DNS_CACHE_SIZE; i++) {
+        socks5_dns_cache_entry_t *entry = &srv->dns_cache[i];
+        if (entry->valid && entry->expires_at_ms <= now_ms)
+            entry->valid = 0;
+        if (!entry->valid) {
+            slot = entry;
+            break;
+        }
+        if (strcmp(entry->domain, domain) == 0) {
+            slot = entry;
+            break;
+        }
+        if (entry->last_used_ms < oldest->last_used_ms)
+            oldest = entry;
+    }
+    if (!slot)
+        slot = oldest;
+
+    slot->valid = 1;
+    slot->ip = ip;
+    slot->expires_at_ms = now_ms + SOCKS5_DNS_TTL_MS;
+    slot->last_used_ms = now_ms;
+    snprintf(slot->domain, sizeof(slot->domain), "%s", domain);
+}
 
 static void flush_remove(socks5_conn_t *sc) {
     socks5_server_t *srv = sc->server;
@@ -324,9 +387,11 @@ static void socks5_conn_close(socks5_conn_t *sc) {
         sc->wg_conn = NULL;
     }
     if (sc->resolve_req) {
+        resolve_req_ctx_t *ctx = sc->resolve_req->data;
         wg_dbg(sc->stack->dev, "s5 conn=%p resolve_cancel req=%p",
                (void *)sc, (void *)sc->resolve_req);
-        sc->resolve_req->data = NULL;
+        if (ctx)
+            ctx->sc = NULL;
         uv_cancel((uv_req_t *)sc->resolve_req);
         sc->resolve_req = NULL;
     }
@@ -340,38 +405,48 @@ static void socks5_conn_close(socks5_conn_t *sc) {
 /* ---- DNS resolution callback -------------------------------------------- */
 static void on_resolved(uv_getaddrinfo_t *req, int status,
                          struct addrinfo *res) {
-    socks5_conn_t *sc = req->data;
+    resolve_req_ctx_t *ctx = req->data;
+    socks5_conn_t *sc = ctx ? ctx->sc : NULL;
     if (sc)
         sc->resolve_req = NULL;
     if (sc)
-        wg_dbg(sc->stack->dev, "s5 conn=%p resolve_done status=%d", (void *)sc, status);
-    free(req);
+        wg_dbg(sc->stack->dev, "s5 conn=%p resolve_done status=%d domain=%s",
+               (void *)sc, status, ctx->domain);
 
     if (!sc || sc->write_state == S5W_CLOSED) {
         uv_freeaddrinfo(res);
+        free(ctx);
         return;
     }
 
-    if (status < 0 || !res) {
-        send_reply(sc, S5_REP_FAIL);
-        socks5_conn_close(sc);
-        uv_freeaddrinfo(res);
-        return;
+    uint32_t ip = 0;
+    if (status >= 0 && res) {
+        struct addrinfo *ai = res;
+        while (ai && ai->ai_family != AF_INET)
+            ai = ai->ai_next;
+        if (ai)
+            ip = ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
+        else
+            status = UV_EAI_NONAME;
     }
 
-    /* Pick first IPv4 result */
-    struct addrinfo *ai = res;
-    while (ai && ai->ai_family != AF_INET) ai = ai->ai_next;
-    if (!ai) {
-        send_reply(sc, S5_REP_FAIL);
-        socks5_conn_close(sc);
-        uv_freeaddrinfo(res);
-        return;
-    }
-
-    sc->target_ip = ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
     uv_freeaddrinfo(res);
+    resolve_complete(sc, ctx->domain, status, ip);
+    free(ctx);
+}
 
+static void resolve_complete(socks5_conn_t *sc, const char *domain,
+                             int status, uint32_t ip) {
+    if (!sc || sc->write_state == S5W_CLOSED)
+        return;
+    if (status < 0 || ip == 0) {
+        send_reply(sc, S5_REP_FAIL);
+        socks5_conn_close(sc);
+        return;
+    }
+
+    sc->target_ip = ip;
+    dns_cache_store(sc->server, domain, ip, uv_now(sc->stack->loop));
     sc->state = S5_CONNECTING;
     do_connect(sc);
 }
@@ -452,23 +527,35 @@ static void process_connect_request(socks5_conn_t *sc) {
         domain[dlen] = '\0';
 
         sc->state = S5_RESOLVING;
-        uv_getaddrinfo_t *req = malloc(sizeof(*req));
-        if (!req) {
+        uint32_t cached_ip;
+        if (dns_cache_lookup(sc->server, domain, uv_now(sc->stack->loop),
+                             &cached_ip) == 0) {
+            wg_dbg(sc->stack->dev, "s5 conn=%p resolve_cache_hit domain=%s",
+                   (void *)sc, domain);
+            resolve_complete(sc, domain, 0, cached_ip);
+            return;
+        }
+        resolve_req_ctx_t *ctx = calloc(1, sizeof(*ctx));
+        if (!ctx) {
             send_reply(sc, S5_REP_FAIL);
             socks5_conn_close(sc);
             return;
         }
-        wg_dbg(sc->stack->dev, "s5 conn=%p resolve_start domain=%s", (void *)sc, domain);
-        sc->resolve_req = req;
-        req->data = sc;
+        snprintf(ctx->domain, sizeof(ctx->domain), "%s", domain);
+        ctx->sc = sc;
+        wg_dbg(sc->stack->dev, "s5 conn=%p resolve_start domain=%s",
+               (void *)sc, domain);
+        sc->resolve_req = &ctx->req;
+        ctx->req.data = ctx;
         struct addrinfo hints;
         memset(&hints, 0, sizeof(hints));
         hints.ai_family   = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        int ret = uv_getaddrinfo(sc->stack->loop, req, on_resolved,
+        int ret = uv_getaddrinfo(sc->stack->loop, &ctx->req, on_resolved,
                                   domain, NULL, &hints);
         if (ret < 0) {
-            free(req);
+            free(ctx);
+            sc->resolve_req = NULL;
             send_reply(sc, S5_REP_FAIL);
             socks5_conn_close(sc);
         }
@@ -483,8 +570,7 @@ static void process_connect_request(socks5_conn_t *sc) {
 /* ---- Established mode data forwarding ----------------------------------- */
 static void client_read_established(socks5_conn_t *sc,
                                      const uint8_t *data, size_t len) {
-    if (!sc->wg_conn) return;
-    if (sc->state == S5_CONNECTING) {
+    if (sc->state == S5_RESOLVING || sc->state == S5_CONNECTING) {
         /* Buffer data until connection is up */
         uint8_t *nb = realloc(sc->pending_data, sc->pending_len + len);
         if (!nb) return;
@@ -492,6 +578,7 @@ static void client_read_established(socks5_conn_t *sc,
         sc->pending_data = nb;
         sc->pending_len += len;
     } else if (sc->state == S5_ESTABLISHED) {
+        if (!sc->wg_conn) return;
         tcp_send(sc->wg_conn, data, len);
     }
 }
@@ -516,7 +603,9 @@ static void on_client_read(uv_stream_t *stream, ssize_t nread,
     const uint8_t *data = (uint8_t *)buf->base;
     size_t len = (size_t)nread;
 
-    if (sc->state == S5_ESTABLISHED || sc->state == S5_CONNECTING) {
+    if (sc->state == S5_ESTABLISHED ||
+        sc->state == S5_CONNECTING ||
+        sc->state == S5_RESOLVING) {
         client_read_established(sc, data, len);
         free(buf->base);
         return;
@@ -562,6 +651,12 @@ static void on_connection(uv_stream_t *server, int status) {
         return;
     }
 
+    int ret = uv_tcp_nodelay(&sc->client, 1);
+    if (ret < 0) {
+        wg_dbg(sc->stack->dev, "s5 conn=%p tcp_nodelay failed: %s",
+               (void *)sc, uv_strerror(ret));
+    }
+
     uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);
 }
 
@@ -572,6 +667,8 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
                   const char *bind_addr, uint16_t port) {
     memset(srv, 0, sizeof(*srv));
     srv->stack = stack;
+    const char *cache_env = getenv("SOCKS5_DNS_CACHE");
+    srv->dns_cache_enabled = cache_env && strcmp(cache_env, "0") != 0;
 
     uv_loop_t *loop = stack->loop;
     uv_tcp_init(loop, &srv->listener);
@@ -590,6 +687,10 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
     if (ret < 0) return ret;
 
     fprintf(stderr, "SOCKS5 proxy listening on %s:%u\n", bind_addr, port);
+    if (srv->dns_cache_enabled) {
+        fprintf(stderr, "SOCKS5 DNS cache enabled: %d entries ttl=%ds\n",
+                SOCKS5_DNS_CACHE_SIZE, SOCKS5_DNS_TTL_MS / 1000);
+    }
     return 0;
 }
 

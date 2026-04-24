@@ -70,6 +70,24 @@ struct tcpstack;
 struct socks5_server;
 struct tcp_worker;
 
+#define WG_TX_BUFFER_POOL_SIZE  256
+#define WG_TX_BUFFER_SIZE       (MSG_TRANSPORT_HDR_SIZE + WG_DEFAULT_MTU + WG_AEAD_TAG_LEN)
+#define WG_UDP_SEND_REQ_POOL_SIZE 128
+
+typedef struct wg_tx_buffer {
+    struct wg_tx_buffer *next;
+    int                  pooled;
+    uint8_t              data[WG_TX_BUFFER_SIZE];
+} wg_tx_buffer_t;
+
+typedef struct wg_udp_send_req {
+    struct wg_udp_send_req *next;
+    uv_udp_send_t           req;
+    uv_buf_t                buf;
+    int                     pooled;
+    uint8_t                 data[WG_TX_BUFFER_SIZE];
+} wg_udp_send_req_t;
+
 /* ---- Keypair ---- */
 typedef struct wg_keypair {
     _Atomic uint64_t    send_nonce;
@@ -257,6 +275,16 @@ typedef struct wg_device {
     struct tcpstack    *tcpstack;
     struct socks5_server *socks5_server;
     struct tcp_worker  *tcp_worker;
+
+    /* Transport send buffer pool */
+    pthread_mutex_t     tx_buffer_pool_lock;
+    wg_tx_buffer_t      *tx_buffer_pool;
+    wg_tx_buffer_t      *tx_buffer_nodes;
+
+    /* UDP fallback send request pool */
+    pthread_mutex_t     udp_send_req_pool_lock;
+    wg_udp_send_req_t   *udp_send_req_pool;
+    wg_udp_send_req_t   *udp_send_req_nodes;
 } wg_device_t;
 
 /* Log levels */
