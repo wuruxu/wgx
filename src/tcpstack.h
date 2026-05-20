@@ -21,7 +21,7 @@ typedef enum {
 
 #define WG_TCP_MSS             1380  /* WG MTU 1420 - 20 IP - 20 TCP */
 #define WG_TCP_WINDOW          65535
-#define WG_TCP_SENDBUF_SIZE    (64 * 1024)
+#define WG_TCP_SENDBUF_SIZE    (256 * 1024)
 #define WG_TCP_RETRANSMIT_MS   500
 #define WG_TCP_RETRANSMIT_MAX_MS 8000
 #define WG_TCP_MAX_RETRANSMIT  6
@@ -40,6 +40,7 @@ struct tcp_conn;
 typedef void (*tcp_connect_cb)(struct tcp_conn *conn, int status);
 typedef void (*tcp_data_cb)(struct tcp_conn *conn, const uint8_t *data, size_t len);
 typedef void (*tcp_close_cb)(struct tcp_conn *conn);
+typedef void (*tcp_writeable_cb)(struct tcp_conn *conn);
 
 typedef struct tcp_conn {
     struct tcp_conn *next;
@@ -77,6 +78,7 @@ typedef struct tcp_conn {
     tcp_connect_cb on_connect;
     tcp_data_cb    on_data;
     tcp_close_cb   on_close;
+    tcp_writeable_cb on_writeable;
     void          *userdata;
 
     struct tcpstack *stack;

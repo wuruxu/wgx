@@ -697,6 +697,10 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
                 } else {
                     tcp_flush_pending(conn);
                 }
+                if (conn->sendbuf_len < WG_TCP_SENDBUF_SIZE / 4) {
+                    if (conn->on_writeable)
+                        conn->on_writeable(conn);
+                }
             }
         }
 

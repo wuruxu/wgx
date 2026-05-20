@@ -38,6 +38,7 @@ CFLAGS := \
 	-I$(SRCDIR)
 
 LDFLAGS := \
+    -lcares \
 	-luv \
 	-lpthread \
 	-lssl \

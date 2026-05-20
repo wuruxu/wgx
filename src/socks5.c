@@ -96,6 +96,7 @@ typedef struct socks5_conn {
     socks5_write_state_t write_state;
 
     tcpstack_t    *stack;
+    int            client_paused;
 } socks5_conn_t;
 
 struct resolve_req_ctx {
@@ -125,6 +126,10 @@ static void resolve_complete(socks5_conn_t *sc, const char *domain,
                              uint32_t ip, const struct in6_addr *ip6);
 static void cares_update_timer(socks5_server_t *srv);
 static void cares_timer_cb(uv_timer_t *handle);
+static void wg_on_writeable(tcp_conn_t *conn);
+static void on_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf);
+static void on_client_read(uv_stream_t *stream, ssize_t nread,
+                             const uv_buf_t *buf);
 
 static int dns_cache_lookup(socks5_server_t *srv, const char *domain,
                             uint64_t now_ms, uint32_t *ip_out) {
@@ -644,6 +649,14 @@ static void resolve_complete(socks5_conn_t *sc, const char *domain,
     do_connect(sc);
 }
 
+static void wg_on_writeable(tcp_conn_t *conn) {
+    socks5_conn_t *sc = conn->userdata;
+    if (sc && sc->client_paused && sc->write_state != S5W_CLOSED) {
+        sc->client_paused = 0;
+        uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);
+    }
+}
+
 /* ---- Initiate TCP connection to target ---------------------------------- */
 static void do_connect(socks5_conn_t *sc) {
     const void *addr = (sc->target_family == AF_INET6) ?
@@ -659,6 +672,8 @@ static void do_connect(socks5_conn_t *sc) {
     if (!sc->wg_conn) {
         send_reply(sc, S5_REP_FAIL);
         socks5_conn_close(sc);
+    } else {
+        sc->wg_conn->on_writeable = wg_on_writeable;
     }
 }
 
@@ -795,6 +810,10 @@ static void client_read_established(socks5_conn_t *sc,
     } else if (sc->state == S5_ESTABLISHED) {
         if (!sc->wg_conn) return;
         tcp_send(sc->wg_conn, data, len);
+        if (sc->wg_conn->sendbuf_len > WG_TCP_SENDBUF_SIZE * 3 / 4) {
+            uv_read_stop((uv_stream_t *)&sc->client);
+            sc->client_paused = 1;
+        }
     }
 }
 
