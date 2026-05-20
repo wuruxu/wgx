@@ -53,6 +53,10 @@ struct tcp_worker {
     int               start_result;
     char              bind_addr[64];
     uint16_t          bind_port;
+    packet_msg_t     *main_free_list;
+    size_t            main_free_count;
+    packet_msg_t     *worker_free_list;
+    size_t            worker_free_count;
 };
 
 static void packet_ring_init(packet_ring_t *ring, const char *name) {
@@ -85,20 +89,111 @@ static void log_queue_drop(tcp_worker_t *worker, packet_ring_t *ring) {
            (unsigned long long)ring->dropped);
 }
 
-static packet_msg_t *pool_acquire(tcp_worker_t *worker) {
+static packet_msg_t *pool_acquire_main(tcp_worker_t *worker) {
+    if (worker->main_free_list) {
+        packet_msg_t *msg = worker->main_free_list;
+        worker->main_free_list = msg->next;
+        worker->main_free_count--;
+        return msg;
+    }
     pthread_mutex_lock(&worker->pool_lock);
     packet_msg_t *msg = worker->free_list;
-    if (msg)
-        worker->free_list = msg->next;
+    if (msg) {
+        size_t grabbed = 0;
+        packet_msg_t *curr = msg;
+        while (curr->next && grabbed < 31) {
+            curr = curr->next;
+            grabbed++;
+        }
+        worker->free_list = curr->next;
+        curr->next = NULL;
+        worker->main_free_list = msg->next;
+        worker->main_free_count = grabbed;
+        msg->next = NULL;
+    }
     pthread_mutex_unlock(&worker->pool_lock);
     return msg;
 }
 
-static void pool_release(tcp_worker_t *worker, packet_msg_t *msg) {
+static void pool_release_main(tcp_worker_t *worker, packet_msg_t *msg) {
     msg->len = 0;
+    if (worker->main_free_count < 64) {
+        msg->next = worker->main_free_list;
+        worker->main_free_list = msg;
+        worker->main_free_count++;
+        return;
+    }
     pthread_mutex_lock(&worker->pool_lock);
-    msg->next = worker->free_list;
-    worker->free_list = msg;
+    packet_msg_t *curr = worker->main_free_list;
+    for (size_t i = 0; i < 31; i++) {
+        curr = curr->next;
+    }
+    packet_msg_t *tail = curr;
+    curr = curr->next;
+    tail->next = NULL;
+    packet_msg_t *to_return = msg;
+    to_return->next = curr;
+    packet_msg_t *ret_tail = to_return;
+    while (ret_tail->next) {
+        ret_tail = ret_tail->next;
+    }
+    ret_tail->next = worker->free_list;
+    worker->free_list = to_return;
+    worker->main_free_count = 32;
+    pthread_mutex_unlock(&worker->pool_lock);
+}
+
+static packet_msg_t *pool_acquire_worker(tcp_worker_t *worker) {
+    if (worker->worker_free_list) {
+        packet_msg_t *msg = worker->worker_free_list;
+        worker->worker_free_list = msg->next;
+        worker->worker_free_count--;
+        return msg;
+    }
+    pthread_mutex_lock(&worker->pool_lock);
+    packet_msg_t *msg = worker->free_list;
+    if (msg) {
+        size_t grabbed = 0;
+        packet_msg_t *curr = msg;
+        while (curr->next && grabbed < 31) {
+            curr = curr->next;
+            grabbed++;
+        }
+        worker->free_list = curr->next;
+        curr->next = NULL;
+        worker->worker_free_list = msg->next;
+        worker->worker_free_count = grabbed;
+        msg->next = NULL;
+    }
+    pthread_mutex_unlock(&worker->pool_lock);
+    return msg;
+}
+
+static void pool_release_worker(tcp_worker_t *worker, packet_msg_t *msg) {
+    msg->len = 0;
+    if (worker->worker_free_count < 64) {
+        msg->next = worker->worker_free_list;
+        worker->worker_free_list = msg;
+        worker->worker_free_count++;
+        return;
+    }
+    pthread_mutex_lock(&worker->pool_lock);
+    packet_msg_t *curr = worker->worker_free_list;
+    for (size_t i = 0; i < 31; i++) {
+        curr = curr->next;
+    }
+    packet_msg_t *tail = curr;
+    curr = curr->next;
+    tail->next = NULL;
+    packet_msg_t *to_return = msg;
+    to_return->next = curr;
+    packet_msg_t *ret_tail = to_return;
+    while (ret_tail->next) {
+        ret_tail = ret_tail->next;
+    }
+    ret_tail->next = worker->free_list;
+    worker->free_list = to_return;
+    worker->worker_free_count = 32;
     pthread_mutex_unlock(&worker->pool_lock);
 }
 
@@ -202,7 +297,7 @@ static size_t drain_outbound_batch(tcp_worker_t *worker, size_t limit, int *more
             break;
 
         device_send_ip_packet_local(worker->dev, msg->data, msg->len);
-        pool_release(worker, msg);
+        pool_release_main(worker, msg);
         processed++;
     }
     return processed;
@@ -221,7 +316,7 @@ static size_t drain_inbound_batch(tcp_worker_t *worker, size_t limit, int *more)
             break;
 
         tcpstack_input(&worker->stack, msg->data, msg->len);
-        pool_release(worker, msg);
+        pool_release_worker(worker, msg);
         processed++;
     }
     return processed;
@@ -391,7 +486,7 @@ int tcp_worker_enqueue_inbound(tcp_worker_t *worker,
                                const uint8_t *pkt, size_t len) {
     if (len > WG_MAX_MESSAGE_SIZE)
         return -1;
-    packet_msg_t *msg = pool_acquire(worker);
+    packet_msg_t *msg = pool_acquire_main(worker);
     if (!msg)
         return -1;
     msg->len = len;
@@ -403,7 +498,7 @@ int tcp_worker_enqueue_inbound(tcp_worker_t *worker,
     int ret = ring_push(worker, &worker->inbound, msg, &was_empty);
     pthread_mutex_unlock(&worker->inbound_lock);
     if (ret < 0) {
-        pool_release(worker, msg);
+        pool_release_main(worker, msg);
         return -1;
     }
     if (was_empty)
@@ -415,7 +510,7 @@ int tcp_worker_enqueue_outbound(tcp_worker_t *worker,
                                 const uint8_t *pkt, size_t len) {
     if (len > WG_MAX_MESSAGE_SIZE)
         return -1;
-    packet_msg_t *msg = pool_acquire(worker);
+    packet_msg_t *msg = pool_acquire_worker(worker);
     if (!msg)
         return -1;
     msg->len = len;
@@ -427,7 +522,7 @@ int tcp_worker_enqueue_outbound(tcp_worker_t *worker,
     int ret = ring_push(worker, &worker->outbound, msg, &was_empty);
     pthread_mutex_unlock(&worker->outbound_lock);
     if (ret < 0) {
-        pool_release(worker, msg);
+        pool_release_worker(worker, msg);
         return -1;
     }
     if (was_empty)
