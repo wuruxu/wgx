@@ -60,13 +60,31 @@ out:
 }
 
 /* ---- ChaCha20-Poly1305 ---- */
+#ifdef __GNUC__
+#define THREAD_LOCAL __thread
+#elif defined(_MSC_VER)
+#define THREAD_LOCAL __declspec(thread)
+#elif __STDC_VERSION__ >= 201112L
+#include <threads.h>
+#define THREAD_LOCAL thread_local
+#else
+#define THREAD_LOCAL
+#endif
+
+static THREAD_LOCAL EVP_CIPHER_CTX *t_encrypt_ctx = NULL;
+static THREAD_LOCAL EVP_CIPHER_CTX *t_decrypt_ctx = NULL;
+
 int wg_chacha20poly1305_encrypt(uint8_t *out,
                                 const uint8_t key[WG_KEY_LEN],
                                 const uint8_t nonce[WG_NONCE_LEN],
                                 const uint8_t *plaintext, size_t ptlen,
                                 const uint8_t *aad, size_t aadlen) {
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!t_encrypt_ctx) {
+        t_encrypt_ctx = EVP_CIPHER_CTX_new();
+    }
+    EVP_CIPHER_CTX *ctx = t_encrypt_ctx;
     if (!ctx) return -1;
+    EVP_CIPHER_CTX_reset(ctx);
     int ret = -1, outl = 0, final_len = 0;
 
     if (EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), NULL, NULL, NULL) != 1) goto out;
@@ -82,7 +100,6 @@ int wg_chacha20poly1305_encrypt(uint8_t *out,
                              out + outl + final_len) != 1) goto out;
     ret = 0;
 out:
-    EVP_CIPHER_CTX_free(ctx);
     return ret;
 }
 
@@ -95,8 +112,12 @@ int wg_chacha20poly1305_decrypt(uint8_t *out,
     size_t datalen = ctlen - WG_AEAD_TAG_LEN;
     const uint8_t *tag = ciphertext + datalen;
 
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!t_decrypt_ctx) {
+        t_decrypt_ctx = EVP_CIPHER_CTX_new();
+    }
+    EVP_CIPHER_CTX *ctx = t_decrypt_ctx;
     if (!ctx) return -1;
+    EVP_CIPHER_CTX_reset(ctx);
     int ret = -1, outl = 0, final_len = 0;
 
     if (EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), NULL, NULL, NULL) != 1) goto out;
@@ -110,7 +131,6 @@ int wg_chacha20poly1305_decrypt(uint8_t *out,
     if (EVP_DecryptFinal_ex(ctx, out + outl, &final_len) != 1) { ret = -1; goto out; }
     ret = 0;
 out:
-    EVP_CIPHER_CTX_free(ctx);
     return ret;
 }
 
