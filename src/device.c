@@ -299,6 +299,21 @@ size_t device_pad_packet(size_t pktlen) {
     return padded;
 }
 
+static void peer_stage_packet(wg_peer_t *peer, const uint8_t *pkt, size_t pktlen) {
+    if (!pkt || pktlen == 0 || pktlen > WG_MAX_MESSAGE_SIZE)
+        return;
+
+    pthread_mutex_lock(&peer->staged_lock);
+    if (peer->staged_count < PEER_QUEUE_SIZE) {
+        int tail = peer->staged_tail;
+        memcpy(peer->staged_pkts[tail], pkt, pktlen);
+        peer->staged_lens[tail] = pktlen;
+        peer->staged_tail = (tail + 1) % PEER_QUEUE_SIZE;
+        peer->staged_count++;
+    }
+    pthread_mutex_unlock(&peer->staged_lock);
+}
+
 /* ---- Packet encryption & send ---- */
 int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
                          const uint8_t *pkt, size_t pktlen) {
@@ -311,16 +326,7 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     pthread_mutex_unlock(&peer->keypairs_lock);
 
     if (!kp) {
-        /* Queue packet and initiate handshake */
-        pthread_mutex_lock(&peer->staged_lock);
-        if (peer->staged_count < PEER_QUEUE_SIZE && pktlen <= WG_MAX_MESSAGE_SIZE) {
-            int tail = peer->staged_tail;
-            memcpy(peer->staged_pkts[tail], pkt, pktlen);
-            peer->staged_lens[tail] = pktlen;
-            peer->staged_tail = (tail + 1) % PEER_QUEUE_SIZE;
-            peer->staged_count++;
-        }
-        pthread_mutex_unlock(&peer->staged_lock);
+        peer_stage_packet(peer, pkt, pktlen);
         device_initiate_handshake(dev, peer);
         return 0;
     }
@@ -328,6 +334,7 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     /* Check keypair validity */
     uint64_t now_ms = uv_now(dev->loop);
     if ((now_ms - kp->created_at_ms) >= REJECT_AFTER_TIME_MS) {
+        peer_stage_packet(peer, pkt, pktlen);
         timers_handshake_begin(dev, peer);
         return 0;
     }
@@ -335,6 +342,7 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     /* Get and increment nonce */
     uint64_t nonce = atomic_fetch_add(&kp->send_nonce, 1);
     if (nonce >= REJECT_AFTER_MESSAGES) {
+        peer_stage_packet(peer, pkt, pktlen);
         timers_handshake_begin(dev, peer);
         return 0;
     }
@@ -445,11 +453,13 @@ int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len) {
     return device_send_to_peer(dev, peer, pkt, len);
 }
 
-int device_initiate_handshake(wg_device_t *dev, wg_peer_t *peer) {
+static int device_initiate_handshake_inner(wg_device_t *dev, wg_peer_t *peer,
+                                           int force) {
     uint64_t now_ms = uv_now(dev->loop);
 
     pthread_mutex_lock(&peer->handshake.mutex);
-    if ((now_ms - peer->handshake.last_sent_handshake_ms) < REKEY_TIMEOUT_MS) {
+    if (!force &&
+        (now_ms - peer->handshake.last_sent_handshake_ms) < REKEY_TIMEOUT_MS) {
         pthread_mutex_unlock(&peer->handshake.mutex);
         return 0;  /* already in progress */
     }
@@ -484,6 +494,14 @@ int device_initiate_handshake(wg_device_t *dev, wg_peer_t *peer) {
     /* Start retransmit timer */
     timers_handshake_initiated(dev, peer);
     return ret < 0 ? -1 : 0;
+}
+
+int device_initiate_handshake(wg_device_t *dev, wg_peer_t *peer) {
+    return device_initiate_handshake_inner(dev, peer, 0);
+}
+
+int device_initiate_handshake_force(wg_device_t *dev, wg_peer_t *peer) {
+    return device_initiate_handshake_inner(dev, peer, 1);
 }
 
 /* ---- Inbound UDP packet dispatch ---- */

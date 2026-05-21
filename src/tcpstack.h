@@ -21,8 +21,10 @@ typedef enum {
 
 #define WG_TCP_MSS             1380  /* WG MTU 1420 - 20 IP - 20 TCP */
 #define WG_TCP_WINDOW          65535
+#define WG_TCP_WINDOW_SCALE    4
 #define WG_TCP_SENDBUF_INITIAL_SIZE (32 * 1024)
 #define WG_TCP_SENDBUF_SIZE    (256 * 1024)
+#define WG_TCP_RECV_OOO_SIZE   (2 * 1024 * 1024)
 #define WG_TCP_RETRANSMIT_MS   500
 #define WG_TCP_RETRANSMIT_MAX_MS 8000
 #define WG_TCP_MAX_RETRANSMIT  6
@@ -37,6 +39,7 @@ typedef enum {
 
 struct tcpstack;
 struct tcp_conn;
+struct tcp_ooo_seg;
 
 typedef void (*tcp_connect_cb)(struct tcp_conn *conn, int status);
 typedef void (*tcp_data_cb)(struct tcp_conn *conn, const uint8_t *data, size_t len);
@@ -62,7 +65,11 @@ typedef struct tcp_conn {
     uint32_t snd_una;   /* oldest unacked byte */
     uint32_t snd_nxt;   /* next byte to send */
     uint32_t snd_wnd;   /* remote advertised window */
+    uint32_t snd_mss;
+    uint8_t  snd_wscale;
     uint32_t rcv_nxt;   /* next byte expected from remote */
+    struct tcp_ooo_seg *rcv_ooo;
+    uint32_t rcv_ooo_len;
 
     /* Unacknowledged send buffer: holds bytes [snd_una, snd_nxt) */
     uint8_t  *sendbuf;

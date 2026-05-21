@@ -164,7 +164,7 @@ typedef struct {
 } index_table_t;
 
 /* ---- Peer ---- */
-#define PEER_QUEUE_SIZE     128
+#define PEER_QUEUE_SIZE     512
 
 typedef struct wg_peer {
     struct wg_device    *device;

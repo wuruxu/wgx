@@ -23,7 +23,7 @@ static void cb_retransmit_handshake(uv_timer_t *handle) {
     }
 
     wg_dbg(dev, "Retransmitting handshake (attempt %u)", attempts + 1);
-    device_initiate_handshake(dev, peer);
+    device_initiate_handshake_force(dev, peer);
 
     /* Restart with jitter */
     uint32_t jitter;

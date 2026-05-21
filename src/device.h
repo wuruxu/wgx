@@ -38,6 +38,7 @@ int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len);
 
 /* Initiate a handshake with a peer. */
 int device_initiate_handshake(wg_device_t *dev, wg_peer_t *peer);
+int device_initiate_handshake_force(wg_device_t *dev, wg_peer_t *peer);
 
 /* Send a keepalive to a peer. */
 int device_send_keepalive(wg_device_t *dev, wg_peer_t *peer);

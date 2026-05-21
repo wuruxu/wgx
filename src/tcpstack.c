@@ -15,6 +15,12 @@
 static inline int seq_lt(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
 static inline int seq_le(uint32_t a, uint32_t b) { return (int32_t)(a - b) <= 0; }
 static inline int seq_gt(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
+typedef struct tcp_ooo_seg {
+    struct tcp_ooo_seg *next;
+    uint32_t seq;
+    uint32_t len;
+    uint8_t data[];
+} tcp_ooo_seg_t;
 
 static uint32_t hash_addr32(const uint8_t *buf, size_t len) {
     uint32_t h = 0;
@@ -103,7 +109,10 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
                           uint32_t seq, uint32_t ack,
                           const uint8_t *data, size_t datalen) {
     int is_syn = (flags & TCPF_SYN) != 0;
-    size_t tcp_opts_len = is_syn ? 4 : 0; /* MSS option only on SYN */
+    tcp_ooo_seg_t *sack_seg = NULL;
+    if (!is_syn && datalen == 0 && (flags & TCPF_ACK) && conn->rcv_ooo)
+        sack_seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
+    size_t tcp_opts_len = is_syn ? 12 : (sack_seg ? 12 : 0);
     size_t tcp_hdr_len  = 20 + tcp_opts_len;
     size_t ip_hdr_len   = (conn->family == AF_INET6) ? 40 : 20;
     size_t ip_total     = ip_hdr_len + tcp_hdr_len + datalen;
@@ -152,13 +161,31 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
     memcpy(tcp + 14, &win, 2);
     /* [16-17] checksum = 0 initially; [18-19] urgent = 0 */
 
-    /* MSS option for SYN */
+    /* MSS, SACK permitted, and window scale options for SYN. */
     if (is_syn) {
         uint8_t *opts = tcp + 20;
         opts[0] = 2;  /* kind = MSS */
         opts[1] = 4;  /* length */
         uint16_t mss = htons(WG_TCP_MSS);
         memcpy(opts + 2, &mss, 2);
+        opts[4] = 4;  /* SACK permitted */
+        opts[5] = 2;
+        opts[6] = 1;  /* NOP */
+        opts[7] = 3;  /* window scale */
+        opts[8] = 3;
+        opts[9] = WG_TCP_WINDOW_SCALE;
+        opts[10] = 1; /* pad to 32-bit boundary */
+        opts[11] = 1;
+    } else if (sack_seg) {
+        uint8_t *opts = tcp + 20;
+        uint32_t left = htonl(sack_seg->seq);
+        uint32_t right = htonl(sack_seg->seq + sack_seg->len);
+        opts[0] = 1;  /* NOP */
+        opts[1] = 1;  /* NOP */
+        opts[2] = 5;  /* kind = SACK */
+        opts[3] = 10; /* one SACK block */
+        memcpy(opts + 4, &left, 4);
+        memcpy(opts + 8, &right, 4);
     }
 
     /* Copy payload */
@@ -214,6 +241,94 @@ static void schedule_flush(tcp_conn_t *conn) {
     stack->flush_tail = conn;
 
     uv_check_start(&stack->flush_check, flush_check_cb);
+}
+
+static void tcp_ooo_free(tcp_conn_t *conn) {
+    tcp_ooo_seg_t *seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
+    while (seg) {
+        tcp_ooo_seg_t *next = seg->next;
+        free(seg);
+        seg = next;
+    }
+    conn->rcv_ooo = NULL;
+    conn->rcv_ooo_len = 0;
+}
+
+static void tcp_ooo_drain(tcp_conn_t *conn) {
+    while (!conn->being_freed && conn->rcv_ooo) {
+        tcp_ooo_seg_t *seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
+        if (seg->seq != conn->rcv_nxt)
+            break;
+        conn->rcv_ooo = (struct tcp_ooo_seg *)seg->next;
+        conn->rcv_ooo_len -= seg->len;
+        conn->rcv_nxt += seg->len;
+        if (conn->on_data)
+            conn->on_data(conn, seg->data, seg->len);
+        free(seg);
+    }
+}
+
+static void tcp_ooo_queue(tcp_conn_t *conn, uint32_t seq,
+                          const uint8_t *data, size_t len) {
+    if (len == 0)
+        return;
+
+    uint32_t start = seq;
+    uint32_t end = seq + (uint32_t)len;
+    if (seq_le(end, conn->rcv_nxt))
+        return;
+    if (seq_lt(start, conn->rcv_nxt)) {
+        size_t trim = conn->rcv_nxt - start;
+        start = conn->rcv_nxt;
+        data += trim;
+        len -= trim;
+    }
+
+    tcp_ooo_seg_t **pp = (tcp_ooo_seg_t **)&conn->rcv_ooo;
+    while (*pp && seq_le((*pp)->seq + (*pp)->len, start))
+        pp = &(*pp)->next;
+
+    if (*pp && seq_le((*pp)->seq, start) &&
+        seq_gt((*pp)->seq + (*pp)->len, start)) {
+        size_t trim = (*pp)->seq + (*pp)->len - start;
+        if (trim >= len)
+            return;
+        start += (uint32_t)trim;
+        data += trim;
+        len -= trim;
+    }
+
+    end = start + (uint32_t)len;
+    while (*pp && seq_lt((*pp)->seq, end)) {
+        tcp_ooo_seg_t *cur = *pp;
+        uint32_t cur_end = cur->seq + cur->len;
+        if (seq_le(cur_end, end)) {
+            *pp = cur->next;
+            conn->rcv_ooo_len -= cur->len;
+            free(cur);
+            continue;
+        }
+
+        uint32_t trim = end - cur->seq;
+        memmove(cur->data, cur->data + trim, cur->len - trim);
+        cur->seq += trim;
+        cur->len -= trim;
+        conn->rcv_ooo_len -= trim;
+        break;
+    }
+
+    if (conn->rcv_ooo_len + len > WG_TCP_RECV_OOO_SIZE)
+        return;
+
+    tcp_ooo_seg_t *seg = malloc(sizeof(*seg) + len);
+    if (!seg)
+        return;
+    seg->seq = start;
+    seg->len = (uint32_t)len;
+    memcpy(seg->data, data, len);
+    seg->next = *pp;
+    *pp = seg;
+    conn->rcv_ooo_len += seg->len;
 }
 
 static void bucket_insert(tcpstack_t *stack, tcp_conn_t *conn) {
@@ -300,7 +415,8 @@ static void tcp_flush_pending(tcp_conn_t *conn) {
             break;
 
         uint32_t remaining = conn->sendbuf_len - in_flight;
-        uint32_t seg_len   = remaining < WG_TCP_MSS ? remaining : WG_TCP_MSS;
+        uint32_t mss = conn->snd_mss ? conn->snd_mss : WG_TCP_MSS;
+        uint32_t seg_len   = remaining < mss ? remaining : mss;
         if (seg_len > send_budget)
             seg_len = send_budget;
         if (seg_len == 0)
@@ -356,7 +472,8 @@ static void retransmit_cb(uv_timer_t *timer) {
             size_t   off = 0;
             while (off < conn->sendbuf_len) {
                 size_t seg = conn->sendbuf_len - off;
-                if (seg > WG_TCP_MSS) seg = WG_TCP_MSS;
+                uint32_t mss = conn->snd_mss ? conn->snd_mss : WG_TCP_MSS;
+                if (seg > mss) seg = mss;
                 uint8_t fl = TCPF_ACK | TCPF_PSH;
                 if (off + seg == conn->sendbuf_len &&
                     (conn->state == TCPS_FIN_WAIT || conn->state == TCPS_LAST_ACK))
@@ -387,6 +504,7 @@ static void timer_close_cb(uv_handle_t *h) {
         if (conn->on_close) conn->on_close(conn);
     }
     free(conn->sendbuf);
+    tcp_ooo_free(conn);
     free(conn);
 }
 
@@ -415,6 +533,7 @@ static void conn_destroy(tcp_conn_t *conn) {
             if (conn->on_close) conn->on_close(conn);
         }
         free(conn->sendbuf);
+        tcp_ooo_free(conn);
         free(conn);
     }
 }
@@ -483,6 +602,8 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     conn->on_close    = on_close;
     conn->userdata    = userdata;
     conn->snd_wnd     = WG_TCP_MSS; /* conservative until SYN-ACK */
+    conn->snd_mss     = WG_TCP_MSS;
+    conn->snd_wscale  = 0;
     conn->sendbuf_cap = WG_TCP_SENDBUF_INITIAL_SIZE;
     conn->sendbuf = malloc(conn->sendbuf_cap);
     if (!conn->sendbuf)
@@ -660,8 +781,9 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
         return;
     }
 
-    /* Update remote window */
-    conn->snd_wnd = remote_window;
+    /* Update remote window. Window scaling is negotiated in SYN/SYN-ACK. */
+    conn->snd_wnd = (conn->state == TCPS_SYN_SENT) ?
+        remote_window : ((uint32_t)remote_window << conn->snd_wscale);
 
     /* --- State machine --- */
     switch (conn->state) {
@@ -682,7 +804,7 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
             send_segment(conn, TCPF_ACK,
                          conn->snd_nxt, conn->rcv_nxt, NULL, 0);
 
-            /* Parse remote MSS option if present */
+            /* Parse remote MSS and window scale options if present. */
             if (data_off > 20) {
                 const uint8_t *opt = tcp + 20;
                 const uint8_t *end = tcp + data_off;
@@ -696,11 +818,15 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
                         uint16_t rmss;
                         memcpy(&rmss, opt + 2, 2);
                         rmss = ntohs(rmss);
-                        if (rmss < WG_TCP_MSS) conn->snd_wnd = rmss;
+                        if (rmss > 0 && rmss < WG_TCP_MSS)
+                            conn->snd_mss = rmss;
+                    } else if (*opt == 3 && optlen == 3) {
+                        conn->snd_wscale = opt[2] > 14 ? 14 : opt[2];
                     }
                     opt += optlen;
                 }
             }
+            conn->snd_wnd = (uint32_t)remote_window << conn->snd_wscale;
 
             if (conn->on_connect) conn->on_connect(conn, 0);
         }
@@ -730,16 +856,32 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
             }
         }
 
-        /* Deliver in-order data */
+        /* Deliver in-order data and keep a bounded buffer for later segments. */
         if (payload_len > 0 && seq == conn->rcv_nxt) {
             conn->rcv_nxt += (uint32_t)payload_len;
-            send_segment(conn, TCPF_ACK,
-                         conn->snd_nxt, conn->rcv_nxt, NULL, 0);
             if (conn->on_data) conn->on_data(conn, payload, payload_len);
+            tcp_ooo_drain(conn);
+            if (!conn->being_freed) {
+                send_segment(conn, TCPF_ACK,
+                             conn->snd_nxt, conn->rcv_nxt, NULL, 0);
+            }
         } else if (payload_len > 0) {
-            /* Out-of-order: send duplicate ACK to prompt retransmit */
-            send_segment(conn, TCPF_ACK,
-                         conn->snd_nxt, conn->rcv_nxt, NULL, 0);
+            if (seq_gt(seq, conn->rcv_nxt))
+                tcp_ooo_queue(conn, seq, payload, payload_len);
+            else if (seq_lt(seq, conn->rcv_nxt)) {
+                uint32_t already = conn->rcv_nxt - seq;
+                if (already < payload_len) {
+                    payload += already;
+                    payload_len -= already;
+                    conn->rcv_nxt += (uint32_t)payload_len;
+                    if (conn->on_data) conn->on_data(conn, payload, payload_len);
+                    tcp_ooo_drain(conn);
+                }
+            }
+            if (!conn->being_freed) {
+                send_segment(conn, TCPF_ACK,
+                             conn->snd_nxt, conn->rcv_nxt, NULL, 0);
+            }
         }
 
         /* FIN from remote */

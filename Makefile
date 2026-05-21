@@ -34,6 +34,8 @@ CFLAGS := \
 	-Wstrict-prototypes \
 	-O2 \
 	-g \
+	-MMD \
+	-MP \
 	-D_GNU_SOURCE \
 	-I$(SRCDIR)
 
@@ -60,6 +62,8 @@ $(TARGET): $(OBJS)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+-include $(OBJS:.o=.d)
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
