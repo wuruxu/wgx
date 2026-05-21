@@ -109,10 +109,16 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
                           uint32_t seq, uint32_t ack,
                           const uint8_t *data, size_t datalen) {
     int is_syn = (flags & TCPF_SYN) != 0;
-    tcp_ooo_seg_t *sack_seg = NULL;
-    if (!is_syn && datalen == 0 && (flags & TCPF_ACK) && conn->rcv_ooo)
-        sack_seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
-    size_t tcp_opts_len = is_syn ? 12 : (sack_seg ? 12 : 0);
+    tcp_ooo_seg_t *sack_segs[WG_TCP_MAX_SACK_BLOCKS];
+    size_t sack_count = 0;
+    if (!is_syn && datalen == 0 && (flags & TCPF_ACK)) {
+        for (tcp_ooo_seg_t *seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
+             seg && sack_count < WG_TCP_MAX_SACK_BLOCKS;
+             seg = seg->next) {
+            sack_segs[sack_count++] = seg;
+        }
+    }
+    size_t tcp_opts_len = is_syn ? 12 : (sack_count ? 4 + sack_count * 8 : 0);
     size_t tcp_hdr_len  = 20 + tcp_opts_len;
     size_t ip_hdr_len   = (conn->family == AF_INET6) ? 40 : 20;
     size_t ip_total     = ip_hdr_len + tcp_hdr_len + datalen;
@@ -176,16 +182,18 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
         opts[9] = WG_TCP_WINDOW_SCALE;
         opts[10] = 1; /* pad to 32-bit boundary */
         opts[11] = 1;
-    } else if (sack_seg) {
+    } else if (sack_count) {
         uint8_t *opts = tcp + 20;
-        uint32_t left = htonl(sack_seg->seq);
-        uint32_t right = htonl(sack_seg->seq + sack_seg->len);
         opts[0] = 1;  /* NOP */
         opts[1] = 1;  /* NOP */
         opts[2] = 5;  /* kind = SACK */
-        opts[3] = 10; /* one SACK block */
-        memcpy(opts + 4, &left, 4);
-        memcpy(opts + 8, &right, 4);
+        opts[3] = (uint8_t)(2 + sack_count * 8);
+        for (size_t i = 0; i < sack_count; i++) {
+            uint32_t left = htonl(sack_segs[i]->seq);
+            uint32_t right = htonl(sack_segs[i]->seq + sack_segs[i]->len);
+            memcpy(opts + 4 + i * 8, &left, 4);
+            memcpy(opts + 8 + i * 8, &right, 4);
+        }
     }
 
     /* Copy payload */
