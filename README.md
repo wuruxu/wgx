@@ -64,6 +64,14 @@ Start a SOCKS5 proxy from a WireGuard config:
 ./wgx --socks5 127.0.0.1:8899 --config wg0.conf
 ```
 
+SOCKS5 username/password authentication is also supported:
+
+```bash
+./wgx --socks5 user:pass@127.0.0.1:8899 --config wg0.conf
+```
+
+If `USER:PASS@` is present, clients must authenticate with the same username and password. If it is omitted, the proxy runs in no-auth mode.
+
 If your config contains an `Address` entry, `wgx` will use it automatically:
 
 ```ini
@@ -97,7 +105,19 @@ Use remote DNS resolution through SOCKS5:
 curl --socks5-hostname 127.0.0.1:8899 https://www.kernel.org/
 ```
 
+With SOCKS5 username/password authentication:
+
+```bash
+curl --socks5-hostname user:pass@127.0.0.1:8899 https://www.kernel.org/
+```
+
 ## Use With Chrome
+
+```bash
+google-chrome --proxy-server="socks5://127.0.0.1:8899"
+```
+
+With username/password authentication, Chrome will prompt for credentials when the proxy requires them:
 
 ```bash
 google-chrome --proxy-server="socks5://127.0.0.1:8899"

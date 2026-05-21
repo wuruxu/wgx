@@ -15,6 +15,9 @@
 /* ---- SOCKS5 constants --------------------------------------------------- */
 #define S5_VER          5
 #define S5_AUTH_NONE    0
+#define S5_AUTH_USERPASS 2
+#define S5_AUTH_NO_ACCEPTABLE 0xff
+#define S5_USERPASS_VER 1
 #define S5_CMD_CONNECT  1
 #define S5_ATYP_IPV4    1
 #define S5_ATYP_DOMAIN  3
@@ -30,6 +33,7 @@
 
 typedef enum {
     S5_INIT = 0,
+    S5_USERPASS,
     S5_AUTH,
     S5_RESOLVING,
     S5_CONNECTING,
@@ -49,6 +53,7 @@ typedef struct resolve_req_ctx resolve_req_ctx_t;
 static const char *s5_state_name(socks5_state_t state) {
     switch (state) {
     case S5_INIT: return "INIT";
+    case S5_USERPASS: return "USERPASS";
     case S5_AUTH: return "AUTH";
     case S5_RESOLVING: return "RESOLVING";
     case S5_CONNECTING: return "CONNECTING";
@@ -916,13 +921,79 @@ static void process_auth_request(socks5_conn_t *sc) {
     uint8_t nmethods = sc->rxbuf[1];
     if (sc->rxbuf_len < (size_t)(2 + nmethods)) return;
 
-    /* Accept: always reply NO_AUTH */
-    uint8_t resp[2] = { S5_VER, S5_AUTH_NONE };
+    int has_no_auth = 0;
+    int has_userpass = 0;
+    for (uint8_t i = 0; i < nmethods; i++) {
+        if (sc->rxbuf[2 + i] == S5_AUTH_NONE)
+            has_no_auth = 1;
+        else if (sc->rxbuf[2 + i] == S5_AUTH_USERPASS)
+            has_userpass = 1;
+    }
+
+    uint8_t selected = S5_AUTH_NO_ACCEPTABLE;
+    socks5_state_t next_state = S5_INIT;
+    if (sc->server->auth_required) {
+        if (has_userpass) {
+            selected = S5_AUTH_USERPASS;
+            next_state = S5_USERPASS;
+        }
+    } else if (has_no_auth) {
+        selected = S5_AUTH_NONE;
+        next_state = S5_AUTH;
+    }
+
+    uint8_t resp[2] = { S5_VER, selected };
     client_write(sc, resp, 2);
-    sc->state = S5_AUTH;
+    if (selected == S5_AUTH_NO_ACCEPTABLE) {
+        socks5_conn_close(sc);
+        return;
+    }
+    sc->state = next_state;
 
     /* Remove consumed bytes */
     size_t consumed = 2 + nmethods;
+    sc->rxbuf_len -= consumed;
+    if (sc->rxbuf_len)
+        memmove(sc->rxbuf, sc->rxbuf + consumed, sc->rxbuf_len);
+}
+
+static void process_userpass_auth(socks5_conn_t *sc) {
+    if (sc->rxbuf_len < 2)
+        return;
+    if (sc->rxbuf[0] != S5_USERPASS_VER) {
+        uint8_t resp[2] = { S5_USERPASS_VER, 1 };
+        client_write(sc, resp, 2);
+        socks5_conn_close(sc);
+        return;
+    }
+    uint8_t ulen = sc->rxbuf[1];
+    if (ulen == 0) {
+        uint8_t resp[2] = { S5_USERPASS_VER, 1 };
+        client_write(sc, resp, 2);
+        socks5_conn_close(sc);
+        return;
+    }
+    if (sc->rxbuf_len < (size_t)(2 + ulen + 1))
+        return;
+    uint8_t plen = sc->rxbuf[2 + ulen];
+    if (sc->rxbuf_len < (size_t)(3 + ulen + plen))
+        return;
+
+    const uint8_t *user = sc->rxbuf + 2;
+    const uint8_t *pass = sc->rxbuf + 3 + ulen;
+    int ok = strlen(sc->server->auth_user) == ulen &&
+             strlen(sc->server->auth_pass) == plen &&
+             memcmp(user, sc->server->auth_user, ulen) == 0 &&
+             memcmp(pass, sc->server->auth_pass, plen) == 0;
+    uint8_t resp[2] = { S5_USERPASS_VER, ok ? 0 : 1 };
+    client_write(sc, resp, 2);
+    if (!ok) {
+        socks5_conn_close(sc);
+        return;
+    }
+
+    sc->state = S5_AUTH;
+    size_t consumed = 3 + ulen + plen;
     sc->rxbuf_len -= consumed;
     if (sc->rxbuf_len)
         memmove(sc->rxbuf, sc->rxbuf + consumed, sc->rxbuf_len);
@@ -1092,7 +1163,13 @@ static void on_client_read(uv_stream_t *stream, ssize_t nread,
     /* Dispatch based on current state */
     if (sc->state == S5_INIT) {
         process_auth_request(sc);
-        /* Fall through: if buffer has CONNECT request already */
+        if (sc->state == S5_USERPASS)
+            process_userpass_auth(sc);
+        /* Fall through: if buffer has auth/connect request already */
+        if (sc->state == S5_AUTH && sc->rxbuf_len >= 4)
+            process_connect_request(sc);
+    } else if (sc->state == S5_USERPASS) {
+        process_userpass_auth(sc);
         if (sc->state == S5_AUTH && sc->rxbuf_len >= 4)
             process_connect_request(sc);
     } else if (sc->state == S5_AUTH) {
@@ -1135,9 +1212,16 @@ static void on_connection(uv_stream_t *server, int status) {
 static void server_close_cb(uv_handle_t *h) { (void)h; }
 
 int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
-                  const char *bind_addr, uint16_t port) {
+                  const char *bind_addr, uint16_t port,
+                  const char *auth_user, const char *auth_pass) {
     memset(srv, 0, sizeof(*srv));
     srv->stack = stack;
+    if (auth_user && *auth_user) {
+        srv->auth_required = 1;
+        strncpy(srv->auth_user, auth_user, sizeof(srv->auth_user) - 1);
+        if (auth_pass)
+            strncpy(srv->auth_pass, auth_pass, sizeof(srv->auth_pass) - 1);
+    }
     const char *cache_env = getenv("SOCKS5_DNS_CACHE");
     srv->dns_cache_enabled = !cache_env || strcmp(cache_env, "0") != 0;
 

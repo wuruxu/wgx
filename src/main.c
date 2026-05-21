@@ -38,7 +38,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [-f|--foreground] INTERFACE-NAME\n"
-            "  %s --socks5 ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
+            "  %s --socks5 [USER:PASS@]ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
             prog, prog);
 }
 
@@ -94,6 +94,36 @@ static int parse_addr_port(const char *s, char *addr_out, size_t addr_sz,
     return 0;
 }
 
+static int parse_socks5_arg(const char *s,
+                            char *addr_out, size_t addr_sz,
+                            uint16_t *port_out,
+                            char *user_out, size_t user_sz,
+                            char *pass_out, size_t pass_sz) {
+    const char *addr_part = s;
+    const char *at = strrchr(s, '@');
+    if (at) {
+        const char *colon = memchr(s, ':', (size_t)(at - s));
+        if (!colon)
+            return -1;
+        size_t ulen = (size_t)(colon - s);
+        size_t plen = (size_t)(at - colon - 1);
+        if (ulen == 0 || ulen >= user_sz || plen >= pass_sz || ulen > 255 || plen > 255)
+            return -1;
+        memcpy(user_out, s, ulen);
+        user_out[ulen] = '\0';
+        memcpy(pass_out, colon + 1, plen);
+        pass_out[plen] = '\0';
+        addr_part = at + 1;
+        if (*addr_part == '\0')
+            return -1;
+    } else {
+        user_out[0] = '\0';
+        pass_out[0] = '\0';
+    }
+
+    return parse_addr_port(addr_part, addr_out, addr_sz, port_out);
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
         printf("wireguard-c v%s\n\nUserspace WireGuard daemon for linux.\n"
@@ -105,6 +135,8 @@ int main(int argc, char *argv[]) {
     const char *ifname       = NULL;
     int         socks5_mode  = 0;
     char        socks5_bind[64] = "127.0.0.1";
+    char        socks5_user[256] = "";
+    char        socks5_pass[256] = "";
     uint16_t    socks5_port  = 0;
     char        wg_addr_str[64] = "";
     char        wg_addr6_str[80] = "";
@@ -117,8 +149,10 @@ int main(int argc, char *argv[]) {
 
         } else if (strcmp(argv[i], "--socks5") == 0) {
             if (++i >= argc) { print_usage(argv[0]); return 1; }
-            if (parse_addr_port(argv[i], socks5_bind, sizeof(socks5_bind),
-                                 &socks5_port) < 0) {
+            if (parse_socks5_arg(argv[i], socks5_bind, sizeof(socks5_bind),
+                                 &socks5_port,
+                                 socks5_user, sizeof(socks5_user),
+                                 socks5_pass, sizeof(socks5_pass)) < 0) {
                 fprintf(stderr, "Invalid --socks5 address: %s\n", argv[i]);
                 return 1;
             }
@@ -283,7 +317,9 @@ int main(int argc, char *argv[]) {
 
     if (socks5_mode) {
         if (tcp_worker_start(&g_device.tcp_worker, &g_device,
-                             socks5_bind, socks5_port) < 0) {
+                             socks5_bind, socks5_port,
+                             socks5_user[0] ? socks5_user : NULL,
+                             socks5_user[0] ? socks5_pass : NULL) < 0) {
             fprintf(stderr, "Failed to start SOCKS5 server on %s:%u\n",
                     socks5_bind, socks5_port);
             return 1;
