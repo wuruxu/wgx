@@ -7,8 +7,25 @@ void replay_reset(replay_filter_t *f) {
     memset(f->ring, 0, sizeof(f->ring));
 }
 
-int replay_validate(replay_filter_t *f, uint64_t counter, uint64_t limit) {
+int replay_check(const replay_filter_t *f, uint64_t counter, uint64_t limit) {
     if (counter >= limit)
+        return 0;
+
+    if (counter <= f->last) {
+        if (f->last - counter > REPLAY_WINDOW_SIZE)
+            return 0;
+
+        uint64_t slot = (counter >> 6) & (REPLAY_RING_BLOCKS - 1);
+        uint64_t bit  = UINT64_C(1) << (counter & 63);
+        if (f->ring[slot] & bit)
+            return 0;
+    }
+
+    return 1;
+}
+
+int replay_commit(replay_filter_t *f, uint64_t counter, uint64_t limit) {
+    if (!replay_check(f, counter, limit))
         return 0;
 
     uint64_t index_block = counter >> 6;  /* / 64 */
@@ -22,14 +39,14 @@ int replay_validate(replay_filter_t *f, uint64_t counter, uint64_t limit) {
         for (uint64_t i = current + 1; i <= current + diff; i++)
             f->ring[i & (REPLAY_RING_BLOCKS - 1)] = 0;
         f->last = counter;
-    } else if (f->last - counter > REPLAY_WINDOW_SIZE) {
-        return 0;  /* too old */
     }
 
-    /* check and set bit */
     uint64_t slot = index_block & (REPLAY_RING_BLOCKS - 1);
     uint64_t bit  = UINT64_C(1) << (counter & 63);
-    uint64_t old  = f->ring[slot];
-    f->ring[slot] = old | bit;
-    return (old & bit) == 0;  /* valid if bit was not already set */
+    f->ring[slot] |= bit;
+    return 1;
+}
+
+int replay_validate(replay_filter_t *f, uint64_t counter, uint64_t limit) {
+    return replay_commit(f, counter, limit);
 }

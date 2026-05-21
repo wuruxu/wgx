@@ -16,5 +16,11 @@ typedef struct {
 
 void replay_reset(replay_filter_t *f);
 
-/* Returns 1 if counter is valid (not replayed, within window, below limit) */
+/* Returns 1 if counter is valid without mutating the replay window. */
+int replay_check(const replay_filter_t *f, uint64_t counter, uint64_t limit);
+
+/* Records a previously checked counter. Returns 1 if it was not replayed. */
+int replay_commit(replay_filter_t *f, uint64_t counter, uint64_t limit);
+
+/* Returns 1 if counter is valid and records it. */
 int replay_validate(replay_filter_t *f, uint64_t counter, uint64_t limit);

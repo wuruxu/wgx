@@ -661,8 +661,8 @@ static void handle_transport(wg_device_t *dev,
     uint64_t counter  = hdr->counter;
     size_t   datalen  = len - MSG_TRANSPORT_HDR_SIZE;
 
-    /* Anti-replay */
-    if (!replay_validate(&kp->replay, counter, REJECT_AFTER_MESSAGES))
+    /* Check anti-replay before decrypting, but only commit after AEAD succeeds. */
+    if (!replay_check(&kp->replay, counter, REJECT_AFTER_MESSAGES))
         return;
 
     /* Decrypt */
@@ -678,6 +678,11 @@ static void handle_transport(wg_device_t *dev,
                                      NULL, 0) < 0) {
         free(plaintext);
         wg_dbg(dev, "Decrypt failed");
+        return;
+    }
+
+    if (!replay_commit(&kp->replay, counter, REJECT_AFTER_MESSAGES)) {
+        free(plaintext);
         return;
     }
 
