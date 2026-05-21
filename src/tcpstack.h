@@ -48,6 +48,7 @@ typedef void (*tcp_connect_cb)(struct tcp_conn *conn, int status);
 typedef void (*tcp_data_cb)(struct tcp_conn *conn, const uint8_t *data, size_t len);
 typedef void (*tcp_close_cb)(struct tcp_conn *conn);
 typedef void (*tcp_writeable_cb)(struct tcp_conn *conn);
+typedef size_t (*tcp_recv_window_cb)(struct tcp_conn *conn);
 
 typedef struct tcp_conn {
     struct tcp_conn *next;
@@ -96,6 +97,7 @@ typedef struct tcp_conn {
     tcp_data_cb    on_data;
     tcp_close_cb   on_close;
     tcp_writeable_cb on_writeable;
+    tcp_recv_window_cb on_recv_window;
     void          *userdata;
 
     struct tcpstack *stack;
@@ -135,6 +137,8 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
 /* Send data on an established connection. */
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len);
 size_t tcp_send_available(const tcp_conn_t *conn);
+void tcp_set_recv_window_cb(tcp_conn_t *conn, tcp_recv_window_cb cb);
+void tcp_update_recv_window(tcp_conn_t *conn);
 
 /* Initiate graceful close (send FIN). */
 void tcp_close(tcp_conn_t *conn);

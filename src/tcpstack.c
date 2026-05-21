@@ -163,7 +163,18 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
     memcpy(tcp + 8, &an, 4);
     tcp[12] = (uint8_t)((tcp_hdr_len / 4) << 4); /* data offset */
     tcp[13] = flags;
-    uint16_t win = htons(WG_TCP_WINDOW);
+    uint32_t actual_window = (uint32_t)WG_TCP_WINDOW << WG_TCP_WINDOW_SCALE;
+    if (!is_syn && conn->on_recv_window)
+        actual_window = (uint32_t)conn->on_recv_window(conn);
+    uint32_t scale = (uint32_t)1 << WG_TCP_WINDOW_SCALE;
+    uint32_t advertised_window = WG_TCP_WINDOW;
+    if (!is_syn) {
+        advertised_window = actual_window == 0 ? 0 :
+            (actual_window + scale - 1) / scale;
+        if (advertised_window > WG_TCP_WINDOW)
+            advertised_window = WG_TCP_WINDOW;
+    }
+    uint16_t win = htons((uint16_t)advertised_window);
     memcpy(tcp + 14, &win, 2);
     /* [16-17] checksum = 0 initially; [18-19] urgent = 0 */
 
@@ -713,6 +724,18 @@ size_t tcp_send_available(const tcp_conn_t *conn) {
     if (!conn || conn->being_freed || conn->state != TCPS_ESTABLISHED)
         return 0;
     return WG_TCP_SENDBUF_SIZE - conn->sendbuf_len;
+}
+
+void tcp_set_recv_window_cb(tcp_conn_t *conn, tcp_recv_window_cb cb) {
+    if (!conn || conn->being_freed)
+        return;
+    conn->on_recv_window = cb;
+}
+
+void tcp_update_recv_window(tcp_conn_t *conn) {
+    if (!conn || conn->being_freed || conn->state != TCPS_ESTABLISHED)
+        return;
+    tcp_ack_now(conn);
 }
 
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {

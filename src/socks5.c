@@ -25,6 +25,8 @@
 #define SOCKS5_DNS_TTL_MS (30 * 1000)
 #define SOCKS5_READ_BUFSIZE 16384
 #define SOCKS5_PENDING_LIMIT (512 * 1024)
+#define SOCKS5_CLIENT_OUTBUF_LIMIT (2 * 1024 * 1024)
+#define SOCKS5_CLIENT_OUTBUF_RESUME (SOCKS5_CLIENT_OUTBUF_LIMIT / 2)
 
 typedef enum {
     S5_INIT = 0,
@@ -100,6 +102,7 @@ typedef struct socks5_conn {
 
     tcpstack_t    *stack;
     int            client_paused;
+    int            wg_recv_window_throttled;
     uint8_t        read_buf[SOCKS5_READ_BUFSIZE];
 } socks5_conn_t;
 
@@ -127,6 +130,8 @@ static void client_read_established(socks5_conn_t *sc,
                                      const uint8_t *data, size_t len);
 static void client_flush(socks5_conn_t *sc);
 static void flush_check_cb(uv_check_t *handle);
+static size_t wg_recv_window(tcp_conn_t *conn);
+static void update_wg_recv_window_state(socks5_conn_t *sc);
 static void resolve_complete(socks5_conn_t *sc, const char *domain,
                              int status, int family,
                              uint32_t ip, const struct in6_addr *ip6);
@@ -472,6 +477,7 @@ static void write_done_cb(uv_write_t *req, int status) {
         socks5_conn_close(sc);
         return;
     }
+    update_wg_recv_window_state(sc);
     if (sc->outbuf_len > 0)
         schedule_client_flush(sc);
 }
@@ -510,6 +516,7 @@ static void client_write(socks5_conn_t *sc,
         return;
     memcpy(sc->outbuf + sc->outbuf_len, data, len);
     sc->outbuf_len += len;
+    update_wg_recv_window_state(sc);
     if (sc->outbuf_len >= 8192) {
         flush_remove(sc);
         client_flush(sc);
@@ -552,6 +559,34 @@ static void wg_on_data(tcp_conn_t *conn, const uint8_t *data, size_t len) {
     socks5_conn_t *sc = conn->userdata;
     if (!sc || sc->write_state == S5W_CLOSED) return;
     client_write(sc, data, len);
+}
+
+static size_t client_buffered_to_browser(const socks5_conn_t *sc) {
+    return sc->outbuf_len + sc->write_buf_len;
+}
+
+static size_t wg_recv_window(tcp_conn_t *conn) {
+    socks5_conn_t *sc = conn->userdata;
+    if (!sc || sc->write_state == S5W_CLOSED)
+        return 0;
+    size_t buffered = client_buffered_to_browser(sc);
+    if (buffered >= SOCKS5_CLIENT_OUTBUF_LIMIT)
+        return 0;
+    return SOCKS5_CLIENT_OUTBUF_LIMIT - buffered;
+}
+
+static void update_wg_recv_window_state(socks5_conn_t *sc) {
+    if (!sc || !sc->wg_conn || sc->write_state == S5W_CLOSED)
+        return;
+    size_t buffered = client_buffered_to_browser(sc);
+    if (buffered >= SOCKS5_CLIENT_OUTBUF_RESUME) {
+        sc->wg_recv_window_throttled = 1;
+        return;
+    }
+    if (sc->wg_recv_window_throttled) {
+        sc->wg_recv_window_throttled = 0;
+        tcp_update_recv_window(sc->wg_conn);
+    }
 }
 
 static void wg_on_close(tcp_conn_t *conn) {
@@ -801,6 +836,7 @@ static void do_connect(socks5_conn_t *sc) {
         socks5_conn_close(sc);
     } else {
         sc->wg_conn->on_writeable = wg_on_writeable;
+        tcp_set_recv_window_cb(sc->wg_conn, wg_recv_window);
     }
 }
 
