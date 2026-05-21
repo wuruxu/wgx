@@ -8,8 +8,9 @@
 
 struct socks5_conn;
 struct socks5_dns_socket;
+struct resolve_req_ctx;
 
-/* Optional per-worker DNS cache, disabled by default. */
+/* Per-worker DNS cache. Set SOCKS5_DNS_CACHE=0 to disable. */
 #define SOCKS5_DNS_CACHE_SIZE  64
 
 typedef struct {
@@ -32,7 +33,9 @@ typedef struct socks5_server {
     ares_channel dns_channel;
     uv_timer_t dns_timer;
     int dns_timer_initialized;
+    int dns_shutting_down;
     struct socks5_dns_socket *dns_sockets;
+    struct resolve_req_ctx *dns_queries;
 } socks5_server_t;
 
 /* Start listening on bind_addr:port.  stack must remain valid. */
