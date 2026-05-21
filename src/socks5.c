@@ -87,6 +87,8 @@ typedef struct socks5_conn {
 
     /* Pending data from WG before ESTABLISHED reply is sent */
     uint8_t       *pending_data;
+    size_t         pending_cap;
+    size_t         pending_head;
     size_t         pending_len;
 
     uint8_t       *outbuf;
@@ -132,6 +134,8 @@ static void client_flush(socks5_conn_t *sc);
 static void flush_check_cb(uv_check_t *handle);
 static size_t wg_recv_window(tcp_conn_t *conn);
 static void update_wg_recv_window_state(socks5_conn_t *sc);
+static int pending_append(socks5_conn_t *sc, const uint8_t *data, size_t len);
+static void pending_consume(socks5_conn_t *sc, size_t len);
 static void resolve_complete(socks5_conn_t *sc, const char *domain,
                              int status, int family,
                              uint32_t ip, const struct in6_addr *ip6);
@@ -589,6 +593,71 @@ static void update_wg_recv_window_state(socks5_conn_t *sc) {
     }
 }
 
+static int pending_grow(socks5_conn_t *sc, size_t need) {
+    if (need <= sc->pending_cap)
+        return 0;
+    size_t new_cap = sc->pending_cap ? sc->pending_cap : SOCKS5_READ_BUFSIZE;
+    while (new_cap < need && new_cap < SOCKS5_PENDING_LIMIT)
+        new_cap *= 2;
+    if (new_cap > SOCKS5_PENDING_LIMIT)
+        new_cap = SOCKS5_PENDING_LIMIT;
+    if (new_cap < need)
+        return -1;
+
+    uint8_t *nb = malloc(new_cap);
+    if (!nb)
+        return -1;
+    if (sc->pending_len) {
+        size_t first = sc->pending_cap - sc->pending_head;
+        if (first > sc->pending_len)
+            first = sc->pending_len;
+        memcpy(nb, sc->pending_data + sc->pending_head, first);
+        if (first < sc->pending_len)
+            memcpy(nb + first, sc->pending_data, sc->pending_len - first);
+    }
+    free(sc->pending_data);
+    sc->pending_data = nb;
+    sc->pending_cap = new_cap;
+    sc->pending_head = 0;
+    return 0;
+}
+
+static int pending_append(socks5_conn_t *sc, const uint8_t *data, size_t len) {
+    if (len == 0)
+        return 0;
+    if (sc->pending_len + len > SOCKS5_PENDING_LIMIT)
+        return -1;
+    if (pending_grow(sc, sc->pending_len + len) < 0)
+        return -1;
+
+    size_t tail = (sc->pending_head + sc->pending_len) % sc->pending_cap;
+    size_t first = sc->pending_cap - tail;
+    if (first > len)
+        first = len;
+    memcpy(sc->pending_data + tail, data, first);
+    if (first < len)
+        memcpy(sc->pending_data, data + first, len - first);
+    sc->pending_len += len;
+    return 0;
+}
+
+static size_t pending_contiguous_len(const socks5_conn_t *sc) {
+    if (sc->pending_len == 0)
+        return 0;
+    size_t first = sc->pending_cap - sc->pending_head;
+    return first < sc->pending_len ? first : sc->pending_len;
+}
+
+static void pending_consume(socks5_conn_t *sc, size_t len) {
+    if (len >= sc->pending_len) {
+        sc->pending_head = 0;
+        sc->pending_len = 0;
+        return;
+    }
+    sc->pending_head = (sc->pending_head + len) % sc->pending_cap;
+    sc->pending_len -= len;
+}
+
 static void wg_on_close(tcp_conn_t *conn) {
     socks5_conn_t *sc = conn->userdata;
     if (sc) {
@@ -933,15 +1002,10 @@ static void client_read_established(socks5_conn_t *sc,
                                      const uint8_t *data, size_t len) {
     if (sc->state == S5_RESOLVING || sc->state == S5_CONNECTING) {
         /* Buffer data until connection is up */
-        if (sc->pending_len + len > SOCKS5_PENDING_LIMIT) {
+        if (pending_append(sc, data, len) < 0) {
             socks5_conn_close(sc);
             return;
         }
-        uint8_t *nb = realloc(sc->pending_data, sc->pending_len + len);
-        if (!nb) return;
-        memcpy(nb + sc->pending_len, data, len);
-        sc->pending_data = nb;
-        sc->pending_len += len;
     } else if (sc->state == S5_ESTABLISHED) {
         if (!sc->wg_conn) return;
         size_t avail = tcp_send_available(sc->wg_conn);
@@ -950,15 +1014,10 @@ static void client_read_established(socks5_conn_t *sc,
             send_len = 0;
         if (send_len < len) {
             size_t remain = len - send_len;
-            if (sc->pending_len + remain > SOCKS5_PENDING_LIMIT) {
+            if (pending_append(sc, data + send_len, remain) < 0) {
                 socks5_conn_close(sc);
                 return;
             }
-            uint8_t *nb = realloc(sc->pending_data, sc->pending_len + remain);
-            if (!nb) return;
-            memcpy(nb + sc->pending_len, data + send_len, remain);
-            sc->pending_data = nb;
-            sc->pending_len += remain;
         }
         if (sc->pending_len > 0 ||
             sc->wg_conn->sendbuf_len > WG_TCP_SENDBUF_SIZE * 3 / 4) {
@@ -977,18 +1036,19 @@ static void flush_pending_to_wg(socks5_conn_t *sc) {
         size_t avail = tcp_send_available(sc->wg_conn);
         if (avail == 0)
             break;
-        size_t send_len = sc->pending_len < avail ? sc->pending_len : avail;
-        if (tcp_send(sc->wg_conn, sc->pending_data, send_len) < 0)
+        size_t contig = pending_contiguous_len(sc);
+        size_t send_len = contig < avail ? contig : avail;
+        if (tcp_send(sc->wg_conn, sc->pending_data + sc->pending_head,
+                     send_len) < 0)
             break;
-        sc->pending_len -= send_len;
-        if (sc->pending_len)
-            memmove(sc->pending_data, sc->pending_data + send_len,
-                    sc->pending_len);
+        pending_consume(sc, send_len);
     }
 
     if (sc->pending_len == 0) {
         free(sc->pending_data);
         sc->pending_data = NULL;
+        sc->pending_cap = 0;
+        sc->pending_head = 0;
         if (sc->client_paused && sc->write_state != S5W_CLOSED) {
             sc->client_paused = 0;
             uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);

@@ -78,6 +78,7 @@ typedef struct tcp_conn {
     /* Unacknowledged send buffer: holds bytes [snd_una, snd_nxt) */
     uint8_t  *sendbuf;
     uint32_t sendbuf_cap;
+    uint32_t sendbuf_head;
     uint32_t sendbuf_len;
 
     /* Retransmit */

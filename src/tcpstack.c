@@ -426,10 +426,74 @@ static tcp_conn_t *bucket_lookup(tcpstack_t *stack,
     return NULL;
 }
 
+static int sendbuf_grow(tcp_conn_t *conn, uint32_t need) {
+    if (need <= conn->sendbuf_cap)
+        return 0;
+
+    uint32_t new_cap = conn->sendbuf_cap ? conn->sendbuf_cap :
+                       WG_TCP_SENDBUF_INITIAL_SIZE;
+    while (new_cap < need && new_cap < WG_TCP_SENDBUF_SIZE)
+        new_cap *= 2;
+    if (new_cap > WG_TCP_SENDBUF_SIZE)
+        new_cap = WG_TCP_SENDBUF_SIZE;
+    if (new_cap < need)
+        return -1;
+
+    uint8_t *nb = malloc(new_cap);
+    if (!nb)
+        return -1;
+    if (conn->sendbuf_len) {
+        uint32_t first = conn->sendbuf_cap - conn->sendbuf_head;
+        if (first > conn->sendbuf_len)
+            first = conn->sendbuf_len;
+        memcpy(nb, conn->sendbuf + conn->sendbuf_head, first);
+        if (first < conn->sendbuf_len)
+            memcpy(nb + first, conn->sendbuf, conn->sendbuf_len - first);
+    }
+    free(conn->sendbuf);
+    conn->sendbuf = nb;
+    conn->sendbuf_cap = new_cap;
+    conn->sendbuf_head = 0;
+    return 0;
+}
+
+static void sendbuf_append(tcp_conn_t *conn, const uint8_t *data, uint32_t len) {
+    uint32_t tail = (conn->sendbuf_head + conn->sendbuf_len) % conn->sendbuf_cap;
+    uint32_t first = conn->sendbuf_cap - tail;
+    if (first > len)
+        first = len;
+    memcpy(conn->sendbuf + tail, data, first);
+    if (first < len)
+        memcpy(conn->sendbuf, data + first, len - first);
+    conn->sendbuf_len += len;
+}
+
+static void sendbuf_copy_out(const tcp_conn_t *conn, uint32_t off,
+                             uint8_t *dst, uint32_t len) {
+    uint32_t pos = (conn->sendbuf_head + off) % conn->sendbuf_cap;
+    uint32_t first = conn->sendbuf_cap - pos;
+    if (first > len)
+        first = len;
+    memcpy(dst, conn->sendbuf + pos, first);
+    if (first < len)
+        memcpy(dst + first, conn->sendbuf, len - first);
+}
+
+static void sendbuf_consume(tcp_conn_t *conn, uint32_t len) {
+    if (len >= conn->sendbuf_len) {
+        conn->sendbuf_head = 0;
+        conn->sendbuf_len = 0;
+        return;
+    }
+    conn->sendbuf_head = (conn->sendbuf_head + len) % conn->sendbuf_cap;
+    conn->sendbuf_len -= len;
+}
+
 static void tcp_flush_pending(tcp_conn_t *conn) {
     if (!conn || conn->being_freed || conn->state != TCPS_ESTABLISHED)
         return;
 
+    uint8_t segbuf[WG_TCP_MSS];
     uint32_t in_flight = conn->snd_nxt - conn->snd_una;
     while (in_flight < conn->sendbuf_len) {
         uint32_t send_budget = conn->snd_wnd > in_flight ?
@@ -445,9 +509,10 @@ static void tcp_flush_pending(tcp_conn_t *conn) {
         if (seg_len == 0)
             break;
 
+        sendbuf_copy_out(conn, in_flight, segbuf, seg_len);
         send_segment(conn, TCPF_ACK | TCPF_PSH,
                      conn->snd_una + in_flight, conn->rcv_nxt,
-                     conn->sendbuf + in_flight, seg_len);
+                     segbuf, seg_len);
         in_flight += seg_len;
     }
     conn->snd_nxt = conn->snd_una + in_flight;
@@ -526,6 +591,7 @@ static void retransmit_cb(uv_timer_t *timer) {
         if (conn->sendbuf_len > 0) {
             uint32_t seq = conn->snd_una;
             size_t   off = 0;
+            uint8_t segbuf[WG_TCP_MSS];
             while (off < conn->sendbuf_len) {
                 size_t seg = conn->sendbuf_len - off;
                 uint32_t mss = conn->snd_mss ? conn->snd_mss : WG_TCP_MSS;
@@ -534,8 +600,9 @@ static void retransmit_cb(uv_timer_t *timer) {
                 if (off + seg == conn->sendbuf_len &&
                     (conn->state == TCPS_FIN_WAIT || conn->state == TCPS_LAST_ACK))
                     fl |= TCPF_FIN;
+                sendbuf_copy_out(conn, (uint32_t)off, segbuf, (uint32_t)seg);
                 send_segment(conn, fl, seq + (uint32_t)off,
-                             conn->rcv_nxt, conn->sendbuf + off, seg);
+                             conn->rcv_nxt, segbuf, seg);
                 off += seg;
             }
         } else if (conn->state == TCPS_FIN_WAIT || conn->state == TCPS_LAST_ACK) {
@@ -742,24 +809,12 @@ int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {
     if (!conn || conn->being_freed) return -1;
     if (conn->state != TCPS_ESTABLISHED) return -1;
     if (len == 0) return 0;
+    if (len > UINT32_MAX) return -1;
     if (conn->sendbuf_len + len > WG_TCP_SENDBUF_SIZE) return -1;
-    if (conn->sendbuf_len + len > conn->sendbuf_cap) {
-        uint32_t new_cap = conn->sendbuf_cap ? conn->sendbuf_cap :
-                           WG_TCP_SENDBUF_INITIAL_SIZE;
-        while (new_cap < conn->sendbuf_len + len &&
-               new_cap < WG_TCP_SENDBUF_SIZE)
-            new_cap *= 2;
-        if (new_cap > WG_TCP_SENDBUF_SIZE)
-            new_cap = WG_TCP_SENDBUF_SIZE;
-        uint8_t *nb = realloc(conn->sendbuf, new_cap);
-        if (!nb) return -1;
-        conn->sendbuf = nb;
-        conn->sendbuf_cap = new_cap;
-    }
 
-    /* Append to send buffer */
-    memcpy(conn->sendbuf + conn->sendbuf_len, data, len);
-    conn->sendbuf_len += len;
+    if (sendbuf_grow(conn, conn->sendbuf_len + (uint32_t)len) < 0)
+        return -1;
+    sendbuf_append(conn, data, (uint32_t)len);
     if (len >= WG_TCP_MSS || conn->sendbuf_len >= WG_TCP_MSS)
         tcp_flush_pending(conn);
     else
@@ -926,11 +981,8 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
         if (flags & TCPF_ACK) {
             if (seq_gt(ack, conn->snd_una) && seq_le(ack, conn->snd_nxt)) {
                 uint32_t acked = ack - conn->snd_una;
-                if (acked <= conn->sendbuf_len) {
-                    conn->sendbuf_len -= acked;
-                    if (conn->sendbuf_len)
-                        memmove(conn->sendbuf, conn->sendbuf + acked, conn->sendbuf_len);
-                }
+                if (acked <= conn->sendbuf_len)
+                    sendbuf_consume(conn, acked);
                 conn->snd_una = ack;
                 if (conn->sendbuf_len == 0) {
                     uv_timer_stop(&conn->retransmit_timer);
