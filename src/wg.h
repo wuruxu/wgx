@@ -70,9 +70,9 @@ struct tcpstack;
 struct socks5_server;
 struct tcp_worker;
 
-#define WG_TX_BUFFER_POOL_SIZE  256
+#define WG_TX_BUFFER_POOL_SIZE  512
 #define WG_TX_BUFFER_SIZE       (MSG_TRANSPORT_HDR_SIZE + WG_DEFAULT_MTU + WG_AEAD_TAG_LEN)
-#define WG_UDP_SEND_REQ_POOL_SIZE 128
+#define WG_UDP_SEND_REQ_POOL_SIZE 512
 
 typedef struct wg_tx_buffer {
     struct wg_tx_buffer *next;

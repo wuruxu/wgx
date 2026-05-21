@@ -386,6 +386,7 @@ static void timer_close_cb(uv_handle_t *h) {
         conn->close_notified = 1;
         if (conn->on_close) conn->on_close(conn);
     }
+    free(conn->sendbuf);
     free(conn);
 }
 
@@ -413,6 +414,7 @@ static void conn_destroy(tcp_conn_t *conn) {
             conn->close_notified = 1;
             if (conn->on_close) conn->on_close(conn);
         }
+        free(conn->sendbuf);
         free(conn);
     }
 }
@@ -481,6 +483,10 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     conn->on_close    = on_close;
     conn->userdata    = userdata;
     conn->snd_wnd     = WG_TCP_MSS; /* conservative until SYN-ACK */
+    conn->sendbuf_cap = WG_TCP_SENDBUF_INITIAL_SIZE;
+    conn->sendbuf = malloc(conn->sendbuf_cap);
+    if (!conn->sendbuf)
+        goto fail;
 
     /* Allocate ephemeral port */
     conn->local_port = stack->next_port++;
@@ -510,8 +516,15 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     return conn;
 
 fail:
+    free(conn->sendbuf);
     free(conn);
     return NULL;
+}
+
+size_t tcp_send_available(const tcp_conn_t *conn) {
+    if (!conn || conn->being_freed || conn->state != TCPS_ESTABLISHED)
+        return 0;
+    return WG_TCP_SENDBUF_SIZE - conn->sendbuf_len;
 }
 
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {
@@ -519,6 +532,19 @@ int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len) {
     if (conn->state != TCPS_ESTABLISHED) return -1;
     if (len == 0) return 0;
     if (conn->sendbuf_len + len > WG_TCP_SENDBUF_SIZE) return -1;
+    if (conn->sendbuf_len + len > conn->sendbuf_cap) {
+        uint32_t new_cap = conn->sendbuf_cap ? conn->sendbuf_cap :
+                           WG_TCP_SENDBUF_INITIAL_SIZE;
+        while (new_cap < conn->sendbuf_len + len &&
+               new_cap < WG_TCP_SENDBUF_SIZE)
+            new_cap *= 2;
+        if (new_cap > WG_TCP_SENDBUF_SIZE)
+            new_cap = WG_TCP_SENDBUF_SIZE;
+        uint8_t *nb = realloc(conn->sendbuf, new_cap);
+        if (!nb) return -1;
+        conn->sendbuf = nb;
+        conn->sendbuf_cap = new_cap;
+    }
 
     /* Append to send buffer */
     memcpy(conn->sendbuf + conn->sendbuf_len, data, len);

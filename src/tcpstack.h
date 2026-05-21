@@ -21,6 +21,7 @@ typedef enum {
 
 #define WG_TCP_MSS             1380  /* WG MTU 1420 - 20 IP - 20 TCP */
 #define WG_TCP_WINDOW          65535
+#define WG_TCP_SENDBUF_INITIAL_SIZE (32 * 1024)
 #define WG_TCP_SENDBUF_SIZE    (256 * 1024)
 #define WG_TCP_RETRANSMIT_MS   500
 #define WG_TCP_RETRANSMIT_MAX_MS 8000
@@ -64,7 +65,8 @@ typedef struct tcp_conn {
     uint32_t rcv_nxt;   /* next byte expected from remote */
 
     /* Unacknowledged send buffer: holds bytes [snd_una, snd_nxt) */
-    uint8_t  sendbuf[WG_TCP_SENDBUF_SIZE];
+    uint8_t  *sendbuf;
+    uint32_t sendbuf_cap;
     uint32_t sendbuf_len;
 
     /* Retransmit */
@@ -117,6 +119,7 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
 
 /* Send data on an established connection. */
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len);
+size_t tcp_send_available(const tcp_conn_t *conn);
 
 /* Initiate graceful close (send FIN). */
 void tcp_close(tcp_conn_t *conn);

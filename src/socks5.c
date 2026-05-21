@@ -23,6 +23,8 @@
 #define S5_REP_FAIL     1
 #define S5_REP_NOCONN   5
 #define SOCKS5_DNS_TTL_MS (30 * 1000)
+#define SOCKS5_READ_BUFSIZE 16384
+#define SOCKS5_PENDING_LIMIT (512 * 1024)
 
 typedef enum {
     S5_INIT = 0,
@@ -97,6 +99,7 @@ typedef struct socks5_conn {
 
     tcpstack_t    *stack;
     int            client_paused;
+    uint8_t        read_buf[SOCKS5_READ_BUFSIZE];
 } socks5_conn_t;
 
 struct resolve_req_ctx {
@@ -130,6 +133,7 @@ static void wg_on_writeable(tcp_conn_t *conn);
 static void on_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf);
 static void on_client_read(uv_stream_t *stream, ssize_t nread,
                              const uv_buf_t *buf);
+static void flush_pending_to_wg(socks5_conn_t *sc);
 
 static int dns_cache_lookup(socks5_server_t *srv, const char *domain,
                             uint64_t now_ms, uint32_t *ip_out) {
@@ -455,10 +459,7 @@ static void wg_on_connect(tcp_conn_t *conn, int status) {
 
     /* Flush any pending data buffered before connection */
     if (sc->pending_data && sc->pending_len) {
-        tcp_send(conn, sc->pending_data, sc->pending_len);
-        free(sc->pending_data);
-        sc->pending_data = NULL;
-        sc->pending_len  = 0;
+        flush_pending_to_wg(sc);
     }
 }
 
@@ -651,7 +652,10 @@ static void resolve_complete(socks5_conn_t *sc, const char *domain,
 
 static void wg_on_writeable(tcp_conn_t *conn) {
     socks5_conn_t *sc = conn->userdata;
-    if (sc && sc->client_paused && sc->write_state != S5W_CLOSED) {
+    if (sc && sc->write_state != S5W_CLOSED)
+        flush_pending_to_wg(sc);
+    if (sc && sc->client_paused && sc->pending_len == 0 &&
+        sc->write_state != S5W_CLOSED) {
         sc->client_paused = 0;
         uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);
     }
@@ -802,6 +806,10 @@ static void client_read_established(socks5_conn_t *sc,
                                      const uint8_t *data, size_t len) {
     if (sc->state == S5_RESOLVING || sc->state == S5_CONNECTING) {
         /* Buffer data until connection is up */
+        if (sc->pending_len + len > SOCKS5_PENDING_LIMIT) {
+            socks5_conn_close(sc);
+            return;
+        }
         uint8_t *nb = realloc(sc->pending_data, sc->pending_len + len);
         if (!nb) return;
         memcpy(nb + sc->pending_len, data, len);
@@ -809,19 +817,64 @@ static void client_read_established(socks5_conn_t *sc,
         sc->pending_len += len;
     } else if (sc->state == S5_ESTABLISHED) {
         if (!sc->wg_conn) return;
-        tcp_send(sc->wg_conn, data, len);
-        if (sc->wg_conn->sendbuf_len > WG_TCP_SENDBUF_SIZE * 3 / 4) {
+        size_t avail = tcp_send_available(sc->wg_conn);
+        size_t send_len = len < avail ? len : avail;
+        if (send_len > 0 && tcp_send(sc->wg_conn, data, send_len) < 0)
+            send_len = 0;
+        if (send_len < len) {
+            size_t remain = len - send_len;
+            if (sc->pending_len + remain > SOCKS5_PENDING_LIMIT) {
+                socks5_conn_close(sc);
+                return;
+            }
+            uint8_t *nb = realloc(sc->pending_data, sc->pending_len + remain);
+            if (!nb) return;
+            memcpy(nb + sc->pending_len, data + send_len, remain);
+            sc->pending_data = nb;
+            sc->pending_len += remain;
+        }
+        if (sc->pending_len > 0 ||
+            sc->wg_conn->sendbuf_len > WG_TCP_SENDBUF_SIZE * 3 / 4) {
             uv_read_stop((uv_stream_t *)&sc->client);
             sc->client_paused = 1;
         }
     }
 }
 
+static void flush_pending_to_wg(socks5_conn_t *sc) {
+    if (!sc || !sc->wg_conn || sc->state != S5_ESTABLISHED ||
+        sc->pending_len == 0)
+        return;
+
+    while (sc->pending_len > 0) {
+        size_t avail = tcp_send_available(sc->wg_conn);
+        if (avail == 0)
+            break;
+        size_t send_len = sc->pending_len < avail ? sc->pending_len : avail;
+        if (tcp_send(sc->wg_conn, sc->pending_data, send_len) < 0)
+            break;
+        sc->pending_len -= send_len;
+        if (sc->pending_len)
+            memmove(sc->pending_data, sc->pending_data + send_len,
+                    sc->pending_len);
+    }
+
+    if (sc->pending_len == 0) {
+        free(sc->pending_data);
+        sc->pending_data = NULL;
+        if (sc->client_paused && sc->write_state != S5W_CLOSED) {
+            sc->client_paused = 0;
+            uv_read_start((uv_stream_t *)&sc->client, on_alloc, on_client_read);
+        }
+    }
+}
+
 /* ---- libuv read callback ------------------------------------------------ */
 static void on_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf) {
-    (void)handle; (void)suggested;
-    buf->base = malloc(8192);
-    buf->len  = buf->base ? 8192 : 0;
+    (void)suggested;
+    socks5_conn_t *sc = handle->data;
+    buf->base = (char *)sc->read_buf;
+    buf->len  = sizeof(sc->read_buf);
 }
 
 static void on_client_read(uv_stream_t *stream, ssize_t nread,
@@ -829,7 +882,6 @@ static void on_client_read(uv_stream_t *stream, ssize_t nread,
     socks5_conn_t *sc = stream->data;
 
     if (nread <= 0) {
-        free(buf->base);
         if (nread != UV_EAGAIN) socks5_conn_close(sc);
         return;
     }
@@ -841,7 +893,6 @@ static void on_client_read(uv_stream_t *stream, ssize_t nread,
         sc->state == S5_CONNECTING ||
         sc->state == S5_RESOLVING) {
         client_read_established(sc, data, len);
-        free(buf->base);
         return;
     }
 
@@ -850,7 +901,6 @@ static void on_client_read(uv_stream_t *stream, ssize_t nread,
     if (len > space) len = space;
     memcpy(sc->rxbuf + sc->rxbuf_len, data, len);
     sc->rxbuf_len += len;
-    free(buf->base);
 
     /* Dispatch based on current state */
     if (sc->state == S5_INIT) {
@@ -933,7 +983,7 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
     ret = uv_tcp_bind(&srv->listener, (const struct sockaddr *)&addr, 0);
     if (ret < 0) return ret;
 
-    ret = uv_listen((uv_stream_t *)&srv->listener, 128, on_connection);
+    ret = uv_listen((uv_stream_t *)&srv->listener, 1024, on_connection);
     if (ret < 0) return ret;
 
     fprintf(stderr, "SOCKS5 proxy listening on %s:%u\n", bind_addr, port);

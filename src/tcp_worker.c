@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TCP_WORKER_QUEUE_CAP   2048
+#define TCP_WORKER_QUEUE_CAP   8192
 #define TCP_WORKER_POOL_SIZE   (TCP_WORKER_QUEUE_CAP * 2)
 #define TCP_WORKER_LOG_STEP    256
 #define TCP_WORKER_BATCH_LIMIT 128
@@ -287,18 +287,27 @@ static int device_send_ip_packet_local(wg_device_t *dev, const uint8_t *pkt, siz
 static size_t drain_outbound_batch(tcp_worker_t *worker, size_t limit, int *more) {
     size_t processed = 0;
     *more = 0;
+    packet_msg_t *batch[TCP_WORKER_BATCH_LIMIT];
 
     while (processed < limit) {
+        size_t n = 0;
         pthread_mutex_lock(&worker->outbound_lock);
-        packet_msg_t *msg = ring_pop(&worker->outbound);
+        while (n < limit - processed) {
+            packet_msg_t *msg = ring_pop(&worker->outbound);
+            if (!msg)
+                break;
+            batch[n++] = msg;
+        }
         *more = ring_has_items(&worker->outbound);
         pthread_mutex_unlock(&worker->outbound_lock);
-        if (!msg)
+        if (n == 0)
             break;
 
-        device_send_ip_packet_local(worker->dev, msg->data, msg->len);
-        pool_release_main(worker, msg);
-        processed++;
+        for (size_t i = 0; i < n; i++) {
+            device_send_ip_packet_local(worker->dev, batch[i]->data, batch[i]->len);
+            pool_release_main(worker, batch[i]);
+        }
+        processed += n;
     }
     return processed;
 }
@@ -306,18 +315,27 @@ static size_t drain_outbound_batch(tcp_worker_t *worker, size_t limit, int *more
 static size_t drain_inbound_batch(tcp_worker_t *worker, size_t limit, int *more) {
     size_t processed = 0;
     *more = 0;
+    packet_msg_t *batch[TCP_WORKER_BATCH_LIMIT];
 
     while (processed < limit) {
+        size_t n = 0;
         pthread_mutex_lock(&worker->inbound_lock);
-        packet_msg_t *msg = ring_pop(&worker->inbound);
+        while (n < limit - processed) {
+            packet_msg_t *msg = ring_pop(&worker->inbound);
+            if (!msg)
+                break;
+            batch[n++] = msg;
+        }
         *more = ring_has_items(&worker->inbound);
         pthread_mutex_unlock(&worker->inbound_lock);
-        if (!msg)
+        if (n == 0)
             break;
 
-        tcpstack_input(&worker->stack, msg->data, msg->len);
-        pool_release_worker(worker, msg);
-        processed++;
+        for (size_t i = 0; i < n; i++) {
+            tcpstack_input(&worker->stack, batch[i]->data, batch[i]->len);
+            pool_release_worker(worker, batch[i]);
+        }
+        processed += n;
     }
     return processed;
 }
