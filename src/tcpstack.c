@@ -207,6 +207,7 @@ static void send_segment(tcp_conn_t *conn, uint8_t flags,
 static void conn_destroy(tcp_conn_t *conn);
 static void tcp_flush_pending(tcp_conn_t *conn);
 static void retransmit_cb(uv_timer_t *timer);
+static void delayed_ack_cb(uv_timer_t *timer);
 
 static void flush_check_cb(uv_check_t *handle) {
     tcpstack_t *stack = handle->data;
@@ -254,7 +255,8 @@ static void tcp_ooo_free(tcp_conn_t *conn) {
     conn->rcv_ooo_len = 0;
 }
 
-static void tcp_ooo_drain(tcp_conn_t *conn) {
+static uint32_t tcp_ooo_drain(tcp_conn_t *conn) {
+    uint32_t drained = 0;
     while (!conn->being_freed && conn->rcv_ooo) {
         tcp_ooo_seg_t *seg = (tcp_ooo_seg_t *)conn->rcv_ooo;
         if (seg->seq != conn->rcv_nxt)
@@ -262,10 +264,12 @@ static void tcp_ooo_drain(tcp_conn_t *conn) {
         conn->rcv_ooo = (struct tcp_ooo_seg *)seg->next;
         conn->rcv_ooo_len -= seg->len;
         conn->rcv_nxt += seg->len;
+        drained += seg->len;
         if (conn->on_data)
             conn->on_data(conn, seg->data, seg->len);
         free(seg);
     }
+    return drained;
 }
 
 static void tcp_ooo_queue(tcp_conn_t *conn, uint32_t seq,
@@ -437,6 +441,39 @@ static void tcp_flush_pending(tcp_conn_t *conn) {
     }
 }
 
+static void tcp_ack_now(tcp_conn_t *conn) {
+    if (!conn || conn->being_freed)
+        return;
+    if (conn->ack_timer_initialized)
+        uv_timer_stop(&conn->ack_timer);
+    conn->delayed_ack_segments = 0;
+    conn->delayed_ack_bytes = 0;
+    send_segment(conn, TCPF_ACK, conn->snd_nxt, conn->rcv_nxt, NULL, 0);
+}
+
+static void tcp_ack_data(tcp_conn_t *conn, size_t len, int immediate) {
+    if (!conn || conn->being_freed)
+        return;
+    if (immediate) {
+        tcp_ack_now(conn);
+        return;
+    }
+
+    conn->delayed_ack_segments++;
+    conn->delayed_ack_bytes += (uint32_t)len;
+    if (conn->delayed_ack_segments >= WG_TCP_DELAYED_ACK_SEGMENTS ||
+        conn->delayed_ack_bytes >= (WG_TCP_MSS * WG_TCP_DELAYED_ACK_SEGMENTS)) {
+        tcp_ack_now(conn);
+        return;
+    }
+
+    if (conn->ack_timer_initialized &&
+        !uv_is_active((uv_handle_t *)&conn->ack_timer)) {
+        uv_timer_start(&conn->ack_timer, delayed_ack_cb,
+                       WG_TCP_DELAYED_ACK_MS, 0);
+    }
+}
+
 /* ---- Retransmit timer callback ------------------------------------------ */
 static void retransmit_cb(uv_timer_t *timer) {
     tcp_conn_t *conn = timer->data;
@@ -495,9 +532,20 @@ static void retransmit_cb(uv_timer_t *timer) {
     uv_timer_start(timer, retransmit_cb, backoff, 0);
 }
 
+static void delayed_ack_cb(uv_timer_t *timer) {
+    tcp_conn_t *conn = timer->data;
+    if (!conn || conn->being_freed)
+        return;
+    if (conn->delayed_ack_segments == 0)
+        return;
+    tcp_ack_now(conn);
+}
+
 /* ---- Connection lifecycle ----------------------------------------------- */
 static void timer_close_cb(uv_handle_t *h) {
     tcp_conn_t *conn = h->data;
+    if (--conn->close_pending > 0)
+        return;
     /* Notify on_close if not yet done */
     if (!conn->close_notified) {
         conn->close_notified = 1;
@@ -522,12 +570,20 @@ static void conn_destroy(tcp_conn_t *conn) {
     bucket_remove(stack, conn);
     flush_remove(stack, conn);
 
-    /* Stop timer and async-free via close callback */
+    /* Stop timers and async-free after both close callbacks have fired. */
     if (conn->timer_initialized) {
         uv_timer_stop(&conn->retransmit_timer);
         conn->retransmit_timer.data = conn;
+        conn->close_pending++;
         uv_close((uv_handle_t *)&conn->retransmit_timer, timer_close_cb);
-    } else {
+    }
+    if (conn->ack_timer_initialized) {
+        uv_timer_stop(&conn->ack_timer);
+        conn->ack_timer.data = conn;
+        conn->close_pending++;
+        uv_close((uv_handle_t *)&conn->ack_timer, timer_close_cb);
+    }
+    if (conn->close_pending == 0) {
         if (!conn->close_notified) {
             conn->close_notified = 1;
             if (conn->on_close) conn->on_close(conn);
@@ -622,6 +678,9 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
     uv_timer_init(stack->loop, &conn->retransmit_timer);
     conn->retransmit_timer.data = conn;
     conn->timer_initialized = 1;
+    uv_timer_init(stack->loop, &conn->ack_timer);
+    conn->ack_timer.data = conn;
+    conn->ack_timer_initialized = 1;
 
     /* Add to list */
     conn->next   = stack->conns;
@@ -800,10 +859,6 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
             uv_timer_stop(&conn->retransmit_timer);
             conn->retransmit_count = 0;
 
-            /* Send ACK */
-            send_segment(conn, TCPF_ACK,
-                         conn->snd_nxt, conn->rcv_nxt, NULL, 0);
-
             /* Parse remote MSS and window scale options if present. */
             if (data_off > 20) {
                 const uint8_t *opt = tcp + 20;
@@ -827,6 +882,9 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
                 }
             }
             conn->snd_wnd = (uint32_t)remote_window << conn->snd_wscale;
+
+            /* Send ACK */
+            tcp_ack_now(conn);
 
             if (conn->on_connect) conn->on_connect(conn, 0);
         }
@@ -860,27 +918,24 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
         if (payload_len > 0 && seq == conn->rcv_nxt) {
             conn->rcv_nxt += (uint32_t)payload_len;
             if (conn->on_data) conn->on_data(conn, payload, payload_len);
-            tcp_ooo_drain(conn);
-            if (!conn->being_freed) {
-                send_segment(conn, TCPF_ACK,
-                             conn->snd_nxt, conn->rcv_nxt, NULL, 0);
-            }
+            uint32_t drained = tcp_ooo_drain(conn);
+            tcp_ack_data(conn, payload_len + drained, drained > 0);
         } else if (payload_len > 0) {
-            if (seq_gt(seq, conn->rcv_nxt))
+            if (seq_gt(seq, conn->rcv_nxt)) {
                 tcp_ooo_queue(conn, seq, payload, payload_len);
-            else if (seq_lt(seq, conn->rcv_nxt)) {
+                tcp_ack_now(conn);
+            } else if (seq_lt(seq, conn->rcv_nxt)) {
                 uint32_t already = conn->rcv_nxt - seq;
                 if (already < payload_len) {
                     payload += already;
                     payload_len -= already;
                     conn->rcv_nxt += (uint32_t)payload_len;
                     if (conn->on_data) conn->on_data(conn, payload, payload_len);
-                    tcp_ooo_drain(conn);
+                    uint32_t drained = tcp_ooo_drain(conn);
+                    tcp_ack_data(conn, payload_len + drained, 1);
+                } else {
+                    tcp_ack_now(conn);
                 }
-            }
-            if (!conn->being_freed) {
-                send_segment(conn, TCPF_ACK,
-                             conn->snd_nxt, conn->rcv_nxt, NULL, 0);
             }
         }
 

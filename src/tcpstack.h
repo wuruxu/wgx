@@ -25,6 +25,8 @@ typedef enum {
 #define WG_TCP_SENDBUF_INITIAL_SIZE (32 * 1024)
 #define WG_TCP_SENDBUF_SIZE    (256 * 1024)
 #define WG_TCP_RECV_OOO_SIZE   (2 * 1024 * 1024)
+#define WG_TCP_DELAYED_ACK_MS   15
+#define WG_TCP_DELAYED_ACK_SEGMENTS 2
 #define WG_TCP_RETRANSMIT_MS   500
 #define WG_TCP_RETRANSMIT_MAX_MS 8000
 #define WG_TCP_MAX_RETRANSMIT  6
@@ -78,8 +80,13 @@ typedef struct tcp_conn {
 
     /* Retransmit */
     uv_timer_t retransmit_timer;
+    uv_timer_t ack_timer;
     int        retransmit_count;
     int        timer_initialized;
+    int        ack_timer_initialized;
+    int        close_pending;
+    uint32_t   delayed_ack_segments;
+    uint32_t   delayed_ack_bytes;
     int        being_freed;
     int        close_notified;
     int        flush_queued;
