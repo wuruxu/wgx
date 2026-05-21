@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include <pthread.h>
+#include <endian.h>
 #include <netinet/in.h>
 #include <uv.h>
 
@@ -54,6 +55,11 @@
 #define MSG_TRANSPORT_HDR_SIZE      16
 #define MSG_TRANSPORT_SIZE          (MSG_TRANSPORT_HDR_SIZE + WG_AEAD_TAG_LEN)
 #define MSG_KEEPALIVE_SIZE          MSG_TRANSPORT_SIZE
+
+static inline uint32_t wg_cpu_to_le32(uint32_t v) { return htole32(v); }
+static inline uint64_t wg_cpu_to_le64(uint64_t v) { return htole64(v); }
+static inline uint32_t wg_le32_to_cpu(uint32_t v) { return le32toh(v); }
+static inline uint64_t wg_le64_to_cpu(uint64_t v) { return le64toh(v); }
 
 /* Noise identifiers */
 #define NOISE_CONSTRUCTION  "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"

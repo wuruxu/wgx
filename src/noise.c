@@ -279,8 +279,8 @@ void cookie_create_reply(wg_cookie_checker_t *cc,
                           uint32_t receiver,
                           msg_cookie_reply_t *reply,
                           uint64_t now_ms) {
-    reply->type     = MSG_COOKIE_REPLY;
-    reply->receiver = receiver;
+    reply->type     = wg_cpu_to_le32(MSG_COOKIE_REPLY);
+    reply->receiver = wg_cpu_to_le32(receiver);
     RAND_bytes(reply->nonce, WG_XNONCE_LEN);
 
     pthread_mutex_lock(&cc->mutex);
@@ -305,7 +305,7 @@ void cookie_create_reply(wg_cookie_checker_t *cc,
 int cookie_consume_reply(wg_cookie_gen_t *cg,
                           const msg_cookie_reply_t *reply,
                           uint64_t now_ms) {
-    if (reply->type != MSG_COOKIE_REPLY) return -1;
+    if (wg_le32_to_cpu(reply->type) != MSG_COOKIE_REPLY) return -1;
 
     pthread_mutex_lock(&cg->mutex);
     if (!cg->has_last_mac1) {
@@ -347,7 +347,7 @@ int noise_create_initiation(wg_device_t *dev, wg_peer_t *peer,
     /* mixHash(remote_static) */
     mix_hash(hs->hash, hs->remote_static, WG_KEY_LEN);
 
-    msg->type   = MSG_INITIATION;
+    msg->type = wg_cpu_to_le32(MSG_INITIATION);
 
     /* msg.ephemeral = local_ephemeral_pub */
     memcpy(msg->ephemeral, hs->local_ephemeral_pub, WG_KEY_LEN);
@@ -395,8 +395,9 @@ int noise_create_initiation(wg_device_t *dev, wg_peer_t *peer,
 
     /* Assign sender index */
     index_table_delete(&dev->index_table, hs->local_index);
-    msg->sender = index_table_new_for_handshake(&dev->index_table, peer, hs);
-    hs->local_index = msg->sender;
+    uint32_t sender = index_table_new_for_handshake(&dev->index_table, peer, hs);
+    msg->sender = wg_cpu_to_le32(sender);
+    hs->local_index = sender;
 
     /* mixHash(timestamp_enc) */
     mix_hash(hs->hash, msg->timestamp_enc, sizeof(msg->timestamp_enc));
@@ -423,7 +424,7 @@ fail:
 /* ---- Handshake: Consume Initiation ---- */
 wg_peer_t *noise_consume_initiation(wg_device_t *dev,
                                       msg_initiation_t *msg) {
-    if (msg->type != MSG_INITIATION) return NULL;
+    if (wg_le32_to_cpu(msg->type) != MSG_INITIATION) return NULL;
 
     pthread_rwlock_rdlock(&dev->identity_lock);
 
@@ -507,7 +508,7 @@ wg_peer_t *noise_consume_initiation(wg_device_t *dev,
     memcpy(hs->hash,              hash,             WG_HASH_LEN);
     memcpy(hs->chain_key,         chain_key,        WG_HASH_LEN);
     memcpy(hs->remote_ephemeral,  msg->ephemeral,   WG_KEY_LEN);
-    hs->remote_index = msg->sender;
+    hs->remote_index = wg_le32_to_cpu(msg->sender);
     if (tai64n_after(&ts, &hs->last_timestamp))
         memcpy(&hs->last_timestamp, &ts, sizeof(ts));
     if (now_ms > hs->last_initiation_consumption_ms)
@@ -544,9 +545,9 @@ int noise_create_response(wg_device_t *dev, wg_peer_t *peer,
     index_table_delete(&dev->index_table, hs->local_index);
     hs->local_index = index_table_new_for_handshake(&dev->index_table, peer, hs);
 
-    msg->type     = MSG_RESPONSE;
-    msg->sender   = hs->local_index;
-    msg->receiver = hs->remote_index;
+    msg->type     = wg_cpu_to_le32(MSG_RESPONSE);
+    msg->sender   = wg_cpu_to_le32(hs->local_index);
+    msg->receiver = wg_cpu_to_le32(hs->remote_index);
 
     /* Generate ephemeral */
     if (wg_generate_private_key(hs->local_ephemeral_priv) < 0) goto fail;
@@ -606,11 +607,14 @@ fail:
 /* ---- Handshake: Consume Response ---- */
 wg_peer_t *noise_consume_response(wg_device_t *dev,
                                    msg_response_t *msg) {
-    if (msg->type != MSG_RESPONSE) return NULL;
+    if (wg_le32_to_cpu(msg->type) != MSG_RESPONSE) return NULL;
 
-    index_entry_t *entry = index_table_lookup(&dev->index_table, msg->receiver);
+    uint32_t receiver = wg_le32_to_cpu(msg->receiver);
+    uint32_t sender = wg_le32_to_cpu(msg->sender);
+
+    index_entry_t *entry = index_table_lookup(&dev->index_table, receiver);
     if (!entry || entry->type != IDX_HANDSHAKE || !entry->handshake) {
-        wg_dbg(dev, "consume_response: no handshake entry for receiver=0x%08x", msg->receiver);
+        wg_dbg(dev, "consume_response: no handshake entry for receiver=0x%08x", receiver);
         return NULL;
     }
 
@@ -622,7 +626,7 @@ wg_peer_t *noise_consume_response(wg_device_t *dev,
 
     pthread_mutex_lock(&hs->mutex);
     if (hs->state != HS_INITIATION_CREATED) {
-        wg_dbg(dev, "consume_response: bad state %d for receiver=0x%08x", hs->state, msg->receiver);
+        wg_dbg(dev, "consume_response: bad state %d for receiver=0x%08x", hs->state, receiver);
         pthread_mutex_unlock(&hs->mutex);
         return NULL;
     }
@@ -672,7 +676,7 @@ wg_peer_t *noise_consume_response(wg_device_t *dev,
     /* Update handshake state */
     memcpy(hs->hash,      hash,      WG_HASH_LEN);
     memcpy(hs->chain_key, chain_key, WG_HASH_LEN);
-    hs->remote_index = msg->sender;
+    hs->remote_index = sender;
     hs->state = HS_RESPONSE_CONSUMED;
 
     pthread_rwlock_unlock(&dev->identity_lock);

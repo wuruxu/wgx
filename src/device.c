@@ -358,9 +358,9 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
     memset(buf, 0, total);
 
     msg_transport_hdr_t *hdr = (msg_transport_hdr_t *)buf;
-    hdr->type     = MSG_TRANSPORT;
-    hdr->receiver = kp->remote_index;
-    hdr->counter  = nonce;
+    hdr->type     = wg_cpu_to_le32(MSG_TRANSPORT);
+    hdr->receiver = wg_cpu_to_le32(kp->remote_index);
+    hdr->counter  = wg_cpu_to_le64(nonce);
 
     /* Copy and pad plaintext */
     uint8_t *plaintext = buf + MSG_TRANSPORT_HDR_SIZE;
@@ -369,7 +369,8 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
 
     /* Encrypt in-place: nonce is little-endian 64-bit padded to 12 bytes */
     uint8_t nonce_bytes[WG_NONCE_LEN] = {0};
-    memcpy(nonce_bytes + 4, &nonce, 8);  /* little-endian, bytes 4-11 */
+    uint64_t nonce_le = wg_cpu_to_le64(nonce);
+    memcpy(nonce_bytes + 4, &nonce_le, 8);  /* little-endian, bytes 4-11 */
     /* Actually WireGuard nonce format: counter is placed in the last 8 bytes
      * of the 12-byte nonce (bytes 4-11 in little endian) */
 
@@ -489,7 +490,8 @@ static int device_initiate_handshake_inner(wg_device_t *dev, wg_peer_t *peer,
     if (ret < 0)
         wg_err(dev, "Handshake send error: %s", uv_strerror(ret));
     else
-        wg_dbg(dev, "Sent handshake initiation (our_idx=0x%08x)", msg.sender);
+        wg_dbg(dev, "Sent handshake initiation (our_idx=0x%08x)",
+               wg_le32_to_cpu(msg.sender));
 
     /* Start retransmit timer */
     timers_handshake_initiated(dev, peer);
@@ -523,7 +525,7 @@ static void handle_initiation(wg_device_t *dev,
         /* Send cookie reply */
         msg_cookie_reply_t reply;
         cookie_create_reply(&dev->cookie_checker, src,
-                             msg->mac1, msg->sender, &reply, now_ms);
+                             msg->mac1, wg_le32_to_cpu(msg->sender), &reply, now_ms);
         udp_send_copy(dev, (const struct sockaddr *)src, src->ss_family,
                       (const uint8_t *)&reply, MSG_COOKIE_REPLY_SIZE);
         return;
@@ -588,14 +590,15 @@ static void handle_response(wg_device_t *dev,
                                         offsetof(msg_response_t, mac2),
                                         now_ms, under_load);
     if (mac_ret < 0) {
-        wg_dbg(dev, "Invalid MAC1 on response (receiver=0x%08x)", msg->receiver);
+        wg_dbg(dev, "Invalid MAC1 on response (receiver=0x%08x)",
+               wg_le32_to_cpu(msg->receiver));
         return;
     }
 
     wg_peer_t *peer = noise_consume_response(dev, msg);
     if (!peer) {
         wg_dbg(dev, "Failed to consume response (receiver=0x%08x, sender=0x%08x)",
-               msg->receiver, msg->sender);
+               wg_le32_to_cpu(msg->receiver), wg_le32_to_cpu(msg->sender));
         return;
     }
 
@@ -614,7 +617,8 @@ static void handle_response(wg_device_t *dev,
 
     timers_handshake_complete(dev, peer);
 
-    /* Flush staged queue */
+    /* Flush staged queue, or send a keepalive to confirm the new session. */
+    int flushed = 0;
     pthread_mutex_lock(&peer->staged_lock);
     while (peer->staged_count > 0) {
         int head = peer->staged_head;
@@ -623,10 +627,13 @@ static void handle_response(wg_device_t *dev,
         peer->staged_head = (head + 1) % PEER_QUEUE_SIZE;
         peer->staged_count--;
         pthread_mutex_unlock(&peer->staged_lock);
+        flushed = 1;
         device_send_to_peer(dev, peer, pkt, pktlen);
         pthread_mutex_lock(&peer->staged_lock);
     }
     pthread_mutex_unlock(&peer->staged_lock);
+    if (!flushed)
+        device_send_keepalive(dev, peer);
 }
 
 static void handle_cookie_reply(wg_device_t *dev,
@@ -637,7 +644,8 @@ static void handle_cookie_reply(wg_device_t *dev,
     msg_cookie_reply_t *msg = (msg_cookie_reply_t *)buf;
 
     /* Find peer by receiver index */
-    index_entry_t *entry = index_table_lookup(&dev->index_table, msg->receiver);
+    uint32_t receiver = wg_le32_to_cpu(msg->receiver);
+    index_entry_t *entry = index_table_lookup(&dev->index_table, receiver);
     if (!entry) return;
     wg_peer_t *peer = entry->peer;
     if (!peer) return;
@@ -652,13 +660,14 @@ static void handle_transport(wg_device_t *dev,
     if (len < MSG_TRANSPORT_SIZE) return;
     msg_transport_hdr_t *hdr = (msg_transport_hdr_t *)buf;
 
-    index_entry_t *entry = index_table_lookup(&dev->index_table, hdr->receiver);
+    uint32_t receiver = wg_le32_to_cpu(hdr->receiver);
+    index_entry_t *entry = index_table_lookup(&dev->index_table, receiver);
     if (!entry || entry->type != IDX_KEYPAIR || !entry->keypair) return;
 
     wg_keypair_t *kp   = entry->keypair;
     wg_peer_t    *peer = entry->peer;
 
-    uint64_t counter  = hdr->counter;
+    uint64_t counter  = wg_le64_to_cpu(hdr->counter);
     size_t   datalen  = len - MSG_TRANSPORT_HDR_SIZE;
 
     /* Check anti-replay before decrypting, but only commit after AEAD succeeds. */
@@ -667,7 +676,8 @@ static void handle_transport(wg_device_t *dev,
 
     /* Decrypt */
     uint8_t nonce_bytes[WG_NONCE_LEN] = {0};
-    memcpy(nonce_bytes + 4, &counter, 8);
+    uint64_t counter_le = wg_cpu_to_le64(counter);
+    memcpy(nonce_bytes + 4, &counter_le, 8);
 
     size_t ptlen = datalen - WG_AEAD_TAG_LEN;
     uint8_t *plaintext = malloc(ptlen ? ptlen : 1);
@@ -791,6 +801,7 @@ static void on_udp_recv(uv_udp_t *handle,
     }
     uint32_t msg_type;
     memcpy(&msg_type, data, 4);
+    msg_type = wg_le32_to_cpu(msg_type);
     wg_dbg(dev, "UDP recv: type=%u len=%zu from %s", msg_type, len, srcstr);
 
     switch (msg_type) {
