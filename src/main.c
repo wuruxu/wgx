@@ -38,7 +38,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [-f|--foreground] INTERFACE-NAME\n"
-            "  %s --socks5 ADDR:PORT --wg-addr VPN-IP [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
+            "  %s --socks5 ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
             prog, prog);
 }
 
@@ -153,10 +153,6 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "--socks5 requires ADDR:PORT\n");
             return 1;
         }
-        if (wg_addr_str[0] == '\0') {
-            fprintf(stderr, "--wg-addr VPN-IP is required in SOCKS5 mode\n");
-            return 1;
-        }
         if (!config_path) {
             fprintf(stderr, "--config WG-CONF is required in SOCKS5 mode\n");
             return 1;
@@ -195,6 +191,24 @@ int main(int argc, char *argv[]) {
 
     if (socks5_mode) {
         struct in_addr wg_ip;
+        struct in6_addr wg_ip6;
+        int conf_has_addr4 = 0;
+        int conf_has_addr6 = 0;
+        if (load_wg_config_addresses(config_path, &wg_ip, &conf_has_addr4,
+                                     &wg_ip6, &conf_has_addr6) == 0) {
+            if (wg_addr_str[0] == '\0' && conf_has_addr4) {
+                inet_ntop(AF_INET, &wg_ip, wg_addr_str, sizeof(wg_addr_str));
+            }
+            if (wg_addr6_str[0] == '\0' && conf_has_addr6) {
+                inet_ntop(AF_INET6, &wg_ip6, wg_addr6_str, sizeof(wg_addr6_str));
+            }
+        }
+
+        if (wg_addr_str[0] == '\0') {
+            fprintf(stderr,
+                    "--wg-addr VPN-IP is required in SOCKS5 mode unless [Interface] Address contains IPv4\n");
+            return 1;
+        }
         if (inet_pton(AF_INET, wg_addr_str, &wg_ip) != 1) {
             fprintf(stderr, "Invalid --wg-addr: %s\n", wg_addr_str);
             return 1;
@@ -276,8 +290,11 @@ int main(int argc, char *argv[]) {
         }
 
         fprintf(stderr,
-                "wireguard-c SOCKS5 proxy: %s:%u  VPN-IP=%s  config=%s\n",
-                socks5_bind, socks5_port, wg_addr_str, config_path);
+                "wireguard-c SOCKS5 proxy: %s:%u  VPN-IP=%s%s%s  config=%s\n",
+                socks5_bind, socks5_port, wg_addr_str,
+                wg_addr6_str[0] ? "  VPN-IPv6=" : "",
+                wg_addr6_str[0] ? wg_addr6_str : "",
+                config_path);
     } else {
         fprintf(stderr, "wireguard-c started on interface %s\n",
                 g_device.ifname);

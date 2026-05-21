@@ -72,6 +72,12 @@ static char *trim(char *s) {
 }
 
 /* ---- Parse and apply a single AllowedIP entry ---------------------------- */
+static void strip_cidr(char *s) {
+    char *slash = strchr(s, '/');
+    if (slash)
+        *slash = '\0';
+}
+
 static void apply_allowed_ip(wg_device_t *dev, wg_peer_t *peer,
                                const char *cidr_str) {
     char buf[64];
@@ -104,6 +110,79 @@ static void apply_allowed_ip(wg_device_t *dev, wg_peer_t *peer,
     }
 
     fprintf(stderr, "conf: failed to parse AllowedIP: %s\n", cidr_str);
+}
+
+int load_wg_config_addresses(const char *path,
+                             struct in_addr *addr4, int *has_addr4,
+                             struct in6_addr *addr6, int *has_addr6) {
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+
+    typedef enum { SEC_NONE, SEC_INTERFACE, SEC_PEER } section_t;
+    section_t section = SEC_NONE;
+    char line[512];
+    int found = 0;
+    if (has_addr4)
+        *has_addr4 = 0;
+    if (has_addr6)
+        *has_addr6 = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        char *s = trim(line);
+        if (*s == '\0' || *s == '#')
+            continue;
+
+        if (*s == '[') {
+            char *end = strchr(s, ']');
+            if (!end)
+                continue;
+            *end = '\0';
+            char *sec = trim(s + 1);
+            if (strcasecmp(sec, "interface") == 0)
+                section = SEC_INTERFACE;
+            else if (strcasecmp(sec, "peer") == 0)
+                section = SEC_PEER;
+            else
+                section = SEC_NONE;
+            continue;
+        }
+
+        if (section != SEC_INTERFACE)
+            continue;
+
+        char *eq = strchr(s, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        char *key = trim(s);
+        char *val = trim(eq + 1);
+        if (strcasecmp(key, "Address") != 0)
+            continue;
+
+        char *dup = strdup(val);
+        if (!dup)
+            continue;
+        char *tok = strtok(dup, ",");
+        while (tok) {
+            char *addr = trim(tok);
+            strip_cidr(addr);
+            if (addr4 && has_addr4 && !*has_addr4 &&
+                inet_pton(AF_INET, addr, addr4) == 1) {
+                *has_addr4 = 1;
+                found = 1;
+            } else if (addr6 && has_addr6 && !*has_addr6 &&
+                       inet_pton(AF_INET6, addr, addr6) == 1) {
+                *has_addr6 = 1;
+                found = 1;
+            }
+            tok = strtok(NULL, ",");
+        }
+        free(dup);
+    }
+
+    fclose(f);
+    return found ? 0 : -1;
 }
 
 /* ---- Resolve endpoint and store in peer ---------------------------------- */
