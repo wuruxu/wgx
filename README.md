@@ -1,22 +1,32 @@
 <h1>
   <img src="wgx-logo.png" alt="WG^x logo" width="128" height="128" style="vertical-align: middle;">
 </h1>
-wgx is a high-performance WireGuard client in userspace that exposes as a local SOCKS5 proxy.
+wgx is a high-performance WireGuard client in userspace. It supports both a
+local SOCKS5 proxy mode and a TUN-device mode that is compatible with the
+standard `wireguard-go`/`wg` userspace workflow.
 
 It is inspired by [wireproxy](https://github.com/windtf/wireproxy), but takes a different implementation path: `wgx` is written in C, built on [libuv](https://libuv.org/), and implements WireGuard and a TCP forwarding path in userspace with performance as the first priority.
 
-The main use case is simple:
+The two supported modes are:
 
 ```text
+SOCKS5 mode:
 browser / curl / app -> SOCKS5 -> wgx -> WireGuard UDP tunnel -> Internet
+
+TUN mode:
+browser / curl / app -> Linux routing -> TUN -> wgx -> WireGuard UDP tunnel -> Internet
 ```
 
-No TUN device is required for SOCKS5 mode, and the process does not need root privileges for normal proxy usage.
+No TUN device is required for SOCKS5 mode, and the process does not need root
+privileges for normal proxy usage. TUN mode is available when you want a
+drop-in userspace WireGuard interface with the familiar `wg` UAPI control path.
 
 ## Features
 
 - WireGuard client implemented in userspace.
 - Local SOCKS5 proxy for TCP traffic.
+- TUN-device mode for system routing through a WireGuard interface.
+- Fully compatible with the standard `wireguard-go`/`wg` UAPI workflow in TUN mode.
 - Written in C with libuv event loops.
 - c-ares based asynchronous DNS resolver with optional cache.
 - IPv4 and IPv6 WireGuard tunnel source address support.
@@ -163,17 +173,36 @@ Supported values:
 
 ## TUN Mode
 
-`wgx` also contains a TUN-device mode, but the primary focus of this project is SOCKS5 proxy mode.
+`wgx` also supports TUN-device mode. This mode is designed to work like a
+userspace WireGuard implementation such as `wireguard-go`: `wgx` creates and
+drives the TUN interface, exposes a WireGuard UAPI socket under
+`/var/run/wireguard/<interface>.sock`, and can be configured with the standard
+`wg` command.
 
 ```bash
-sudo ./wgx wg0
+sudo ./wgx -f wg0
 ```
 
-TUN mode requires root privileges and external interface/route setup, similar to other userspace WireGuard implementations.
+In another terminal, apply a stripped WireGuard config and configure the
+interface address/routes:
+
+```bash
+wg-quick strip wg0.conf > /tmp/wg0.stripped.conf
+sudo wg setconf wg0 /tmp/wg0.stripped.conf
+sudo ip addr add 192.168.111.6/32 dev wg0
+sudo ip route add 1.1.1.1/32 dev wg0
+curl --interface wg0 https://1.1.1.1/cdn-cgi/trace
+```
+
+TUN mode requires root privileges and external interface/route setup, matching
+the behavior expected by users of `wireguard-go` and the standard WireGuard
+tools.
 
 ## Project Goals
 
-`wgx` is designed for users who want a WireGuard-backed SOCKS5 proxy with low overhead and good behavior under browser workloads.
+`wgx` is designed for users who want either a WireGuard-backed SOCKS5 proxy or
+a userspace TUN interface with low overhead and good behavior under browser and
+curl workloads.
 
 The implementation favors:
 
