@@ -1,10 +1,9 @@
-# wgx
-
 <p align="center">
   <img src="wgx-logo.png" alt="wgx logo" width="160">
 </p>
 
-`wgx` is a high-performance WireGuard client that exposes itself as a local SOCKS5 proxy.
+# wgx
+is a high-performance WireGuard client in userspace that exposes as a local SOCKS5 proxy.
 
 It is inspired by [wireproxy](https://github.com/windtf/wireproxy), but takes a different implementation path: `wgx` is written in C, built on [libuv](https://libuv.org/), and implements WireGuard and a TCP forwarding path in userspace with performance as the first priority.
 
