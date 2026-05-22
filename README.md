@@ -1,5 +1,5 @@
 <h1>
-  <img src="wgx-logo.png" alt="WG^x logo" width="68" height="68" style="vertical-align: middle;">
+  <img src="wgx-logo.png" alt="WG^x logo" width="128" height="128" style="vertical-align: middle;">
 </h1>
 wgx is a high-performance WireGuard client in userspace that exposes as a local SOCKS5 proxy.
 
