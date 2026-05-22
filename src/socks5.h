@@ -44,7 +44,8 @@ typedef struct socks5_server {
 /* Start listening on bind_addr:port.  stack must remain valid. */
 int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
                  const char *bind_addr, uint16_t port,
-                 const char *auth_user, const char *auth_pass);
+                 const char *auth_user, const char *auth_pass,
+                 const char *dns_servers);
 
 /* Stop and clean up the server. */
 void socks5_stop(socks5_server_t *srv);

@@ -79,6 +79,7 @@ If your config contains an `Address` entry, `wgx` will use it automatically:
 [Interface]
 PrivateKey = ...
 Address = 10.67.179.113/32, fc00:bbbb:bbbb:bb01::4:b370/128
+DNS = 1.1.1.1
 
 [Peer]
 PublicKey = ...
@@ -132,6 +133,7 @@ google-chrome --proxy-server="socks5://127.0.0.1:8899"
 [Interface]
 PrivateKey = <private-key>
 Address = <ipv4-cidr>, <ipv6-cidr>
+DNS = <dns-server-ip>[, <dns-server-ip>]
 ListenPort = 51820
 
 [Peer]
@@ -143,6 +145,8 @@ PersistentKeepalive = 25
 ```
 
 In SOCKS5 mode, `Address` is used as the local source address inside the WireGuard tunnel. If no IPv4 address is present in the config, pass `--wg-addr` explicitly.
+
+In SOCKS5 mode, `DNS` is used by the local SOCKS5 resolver for domain names sent by clients, for example `DNS = 192.168.111.1` or `DNS = 192.168.111.1, fd00::1`. Only DNS server IP addresses are used; search domains are ignored. `SOCKS5_DNS_SERVER` can still be set to override the config value.
 
 ## Logging
 

@@ -14,7 +14,8 @@ int tcp_worker_start(tcp_worker_t **out,
                      const char *bind_addr,
                      uint16_t port,
                      const char *auth_user,
-                     const char *auth_pass);
+                     const char *auth_pass,
+                     const char *dns_servers);
 void tcp_worker_stop(tcp_worker_t *worker);
 
 int tcp_worker_enqueue_inbound(tcp_worker_t *worker,

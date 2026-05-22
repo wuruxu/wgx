@@ -55,6 +55,7 @@ struct tcp_worker {
     uint16_t          bind_port;
     char              auth_user[256];
     char              auth_pass[256];
+    char              dns_servers[512];
     packet_msg_t     *main_free_list;
     size_t            main_free_count;
     packet_msg_t     *worker_free_list;
@@ -386,7 +387,8 @@ static void tcp_worker_thread(void *arg) {
     worker->start_result = socks5_start(&worker->socks5, &worker->stack,
                                         worker->bind_addr, worker->bind_port,
                                         worker->auth_user[0] ? worker->auth_user : NULL,
-                                        worker->auth_user[0] ? worker->auth_pass : NULL);
+                                        worker->auth_user[0] ? worker->auth_pass : NULL,
+                                        worker->dns_servers[0] ? worker->dns_servers : NULL);
     if (worker->start_result < 0) {
         tcpstack_free(&worker->stack);
         goto close_async;
@@ -419,7 +421,8 @@ int tcp_worker_start(tcp_worker_t **out,
                      const char *bind_addr,
                      uint16_t port,
                      const char *auth_user,
-                     const char *auth_pass) {
+                     const char *auth_pass,
+                     const char *dns_servers) {
     tcp_worker_t *worker = calloc(1, sizeof(*worker));
     if (!worker)
         return -1;
@@ -432,6 +435,8 @@ int tcp_worker_start(tcp_worker_t **out,
         if (auth_pass)
             strncpy(worker->auth_pass, auth_pass, sizeof(worker->auth_pass) - 1);
     }
+    if (dns_servers && *dns_servers)
+        strncpy(worker->dns_servers, dns_servers, sizeof(worker->dns_servers) - 1);
     packet_ring_init(&worker->inbound, "inbound");
     packet_ring_init(&worker->outbound, "outbound");
     pthread_mutex_init(&worker->inbound_lock, NULL);

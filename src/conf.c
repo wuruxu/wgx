@@ -185,6 +185,90 @@ int load_wg_config_addresses(const char *path,
     return found ? 0 : -1;
 }
 
+int load_wg_config_dns(const char *path, char *dns_csv, size_t dns_csv_len) {
+    if (!dns_csv || dns_csv_len == 0)
+        return -1;
+    dns_csv[0] = '\0';
+
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+
+    typedef enum { SEC_NONE, SEC_INTERFACE, SEC_PEER } section_t;
+    section_t section = SEC_NONE;
+    char line[512];
+    int found = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        char *s = trim(line);
+        if (*s == '\0' || *s == '#')
+            continue;
+
+        if (*s == '[') {
+            char *end = strchr(s, ']');
+            if (!end)
+                continue;
+            *end = '\0';
+            char *sec = trim(s + 1);
+            if (strcasecmp(sec, "interface") == 0)
+                section = SEC_INTERFACE;
+            else if (strcasecmp(sec, "peer") == 0)
+                section = SEC_PEER;
+            else
+                section = SEC_NONE;
+            continue;
+        }
+
+        if (section != SEC_INTERFACE)
+            continue;
+
+        char *eq = strchr(s, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        char *key = trim(s);
+        char *val = trim(eq + 1);
+        if (strcasecmp(key, "DNS") != 0)
+            continue;
+
+        char *dup = strdup(val);
+        if (!dup)
+            continue;
+        char *tok = strtok(dup, ",");
+        while (tok) {
+            char *server = trim(tok);
+            struct in_addr a4;
+            struct in6_addr a6;
+            char entry[INET6_ADDRSTRLEN + 2];
+            int valid = 0;
+
+            if (inet_pton(AF_INET, server, &a4) == 1) {
+                snprintf(entry, sizeof(entry), "%s", server);
+                valid = 1;
+            } else if (inet_pton(AF_INET6, server, &a6) == 1) {
+                snprintf(entry, sizeof(entry), "[%s]", server);
+                valid = 1;
+            }
+
+            if (valid) {
+                size_t used = strlen(dns_csv);
+                size_t need = strlen(entry) + (used ? 1 : 0);
+                if (used + need < dns_csv_len) {
+                    if (used)
+                        strncat(dns_csv, ",", dns_csv_len - used - 1);
+                    strncat(dns_csv, entry, dns_csv_len - strlen(dns_csv) - 1);
+                    found = 1;
+                }
+            }
+            tok = strtok(NULL, ",");
+        }
+        free(dup);
+    }
+
+    fclose(f);
+    return found ? 0 : -1;
+}
+
 /* ---- Resolve endpoint and store in peer ---------------------------------- */
 static int apply_endpoint(wg_peer_t *peer, const char *endpoint_str) {
     char host[256];

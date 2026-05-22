@@ -1213,7 +1213,8 @@ static void server_close_cb(uv_handle_t *h) { (void)h; }
 
 int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
                   const char *bind_addr, uint16_t port,
-                  const char *auth_user, const char *auth_pass) {
+                  const char *auth_user, const char *auth_pass,
+                  const char *dns_servers) {
     memset(srv, 0, sizeof(*srv));
     srv->stack = stack;
     if (auth_user && *auth_user) {
@@ -1241,6 +1242,8 @@ int socks5_start(socks5_server_t *srv, tcpstack_t *stack,
 #endif
         if (ares_init_options(&srv->dns_channel, &opts, optmask) == ARES_SUCCESS) {
             const char *dns_server = getenv("SOCKS5_DNS_SERVER");
+            if (!dns_server || !*dns_server)
+                dns_server = dns_servers;
             if (dns_server && *dns_server) {
                 int sret = ares_set_servers_ports_csv(srv->dns_channel, dns_server);
                 if (sret != ARES_SUCCESS) {

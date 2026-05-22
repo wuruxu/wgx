@@ -140,6 +140,7 @@ int main(int argc, char *argv[]) {
     uint16_t    socks5_port  = 0;
     char        wg_addr_str[64] = "";
     char        wg_addr6_str[80] = "";
+    char        dns_servers[512] = "";
     const char *config_path  = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -237,6 +238,7 @@ int main(int argc, char *argv[]) {
                 inet_ntop(AF_INET6, &wg_ip6, wg_addr6_str, sizeof(wg_addr6_str));
             }
         }
+        load_wg_config_dns(config_path, dns_servers, sizeof(dns_servers));
 
         if (wg_addr_str[0] == '\0') {
             fprintf(stderr,
@@ -319,7 +321,8 @@ int main(int argc, char *argv[]) {
         if (tcp_worker_start(&g_device.tcp_worker, &g_device,
                              socks5_bind, socks5_port,
                              socks5_user[0] ? socks5_user : NULL,
-                             socks5_user[0] ? socks5_pass : NULL) < 0) {
+                             socks5_user[0] ? socks5_pass : NULL,
+                             dns_servers[0] ? dns_servers : NULL) < 0) {
             fprintf(stderr, "Failed to start SOCKS5 server on %s:%u\n",
                     socks5_bind, socks5_port);
             return 1;
