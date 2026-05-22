@@ -389,14 +389,21 @@ int load_wg_config(wg_device_t *dev, const char *path) {
                 }
                 wg_dbg(dev, "conf: added peer");
 
-            } else if (strcasecmp(key, "PresharedKey") == 0 && current_peer) {
-                uint8_t psk[WG_PSK_LEN];
-                if (base64_decode(val, psk, WG_PSK_LEN) == WG_PSK_LEN) {
-                    pthread_mutex_lock(&current_peer->handshake.mutex);
-                    memcpy(current_peer->handshake.psk, psk, WG_PSK_LEN);
-                    memcpy(current_peer->psk, psk, WG_PSK_LEN);
-                    pthread_mutex_unlock(&current_peer->handshake.mutex);
+            } else if (strcasecmp(key, "PresharedKey") == 0) {
+                if (!current_peer) {
+                    fprintf(stderr, "conf: PresharedKey must follow peer PublicKey\n");
+                    goto done;
                 }
+                uint8_t psk[WG_PSK_LEN];
+                if (base64_decode(val, psk, WG_PSK_LEN) != WG_PSK_LEN) {
+                    fprintf(stderr, "conf: bad peer PresharedKey\n");
+                    goto done;
+                }
+                pthread_mutex_lock(&current_peer->handshake.mutex);
+                memcpy(current_peer->handshake.psk, psk, WG_PSK_LEN);
+                memcpy(current_peer->psk, psk, WG_PSK_LEN);
+                pthread_mutex_unlock(&current_peer->handshake.mutex);
+                wg_memzero(psk, sizeof(psk));
 
             } else if (strcasecmp(key, "Endpoint") == 0 && current_peer) {
                 if (apply_endpoint(current_peer, val) < 0) {

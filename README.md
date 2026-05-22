@@ -93,7 +93,9 @@ DNS = 1.1.1.1
 
 [Peer]
 PublicKey = ...
-Endpoint = example.com:51820
+# Optional:
+PresharedKey = <base64-preshared-key>
+Endpoint = wg.example.com:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 ```
 
