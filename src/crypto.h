@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * WireGuard crypto primitives:
- *   - Curve25519 (X25519) key exchange via OpenSSL
- *   - ChaCha20-Poly1305 AEAD via OpenSSL
+ *   - Curve25519 (X25519) key exchange via libsodium
+ *   - ChaCha20-Poly1305 AEAD via libsodium
  *   - XChaCha20-Poly1305 AEAD (for cookies)
  *   - HMAC-BLAKE2s and KDF (HKDF-BLAKE2s)
  */

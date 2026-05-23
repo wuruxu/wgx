@@ -4,4 +4,5 @@
   -->
 <resources>
     <item name="item_change_listener" type="id" />
+    <item name="tunnel_name_text_colors" type="id" />
 </resources>

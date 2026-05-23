@@ -14,6 +14,7 @@ set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LIBUV_BUILD_BENCH OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory("${THIRD_PARTY}/libuv" "${CMAKE_CURRENT_BINARY_DIR}/libuv")
+add_subdirectory("${THIRD_PARTY}/libsodium" "${CMAKE_CURRENT_BINARY_DIR}/libsodium")
 
 add_library(wgx SHARED
         wgx_jni.c
@@ -26,10 +27,9 @@ add_library(wgx SHARED
         ${WGX_SRC}/tai64n.c
         ${WGX_SRC}/timers.c
         ${WGX_SRC}/tun.c
-        ${WGX_SRC}/uapi.c
-        ${THIRD_PARTY}/monocypher/monocypher.c)
+        ${WGX_SRC}/uapi.c)
 
-target_include_directories(wgx PRIVATE ${WGX_SRC} ${THIRD_PARTY}/monocypher)
+target_include_directories(wgx PRIVATE ${WGX_SRC})
 target_compile_definitions(wgx PRIVATE _GNU_SOURCE WGX_ANDROID)
 target_compile_options(wgx PRIVATE -Wall -Werror -std=c11)
-target_link_libraries(wgx PRIVATE uv_a log)
+target_link_libraries(wgx PRIVATE uv_a sodium log)

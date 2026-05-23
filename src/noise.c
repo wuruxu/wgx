@@ -5,9 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifndef WGX_ANDROID
-#include <openssl/rand.h>
-#endif
 #include <arpa/inet.h>
 
 /* ---- Helper: mix hash and chain key ---- */

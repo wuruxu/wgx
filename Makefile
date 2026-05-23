@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Makefile for wireguard-c
+# Makefile for wgx
 
 CC      := gcc
 TARGET  := wgx
@@ -43,8 +43,7 @@ LDFLAGS := \
     -lcares \
 	-luv \
 	-lpthread \
-	-lssl \
-	-lcrypto \
+	-lsodium \
 	-ldl \
 	-lrt \
 	-lm
@@ -72,7 +71,7 @@ asan:
 	$(MAKE) clean
 	$(MAKE) \
 		CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -O1 -g -fsanitize=address -fno-omit-frame-pointer -D_GNU_SOURCE -I$(SRCDIR)' \
-		LDFLAGS='-fsanitize=address -luv -lpthread -lssl -lcrypto -ldl -lrt -lm' \
+		LDFLAGS='-fsanitize=address -luv -lpthread -lsodium -ldl -lrt -lm' \
 		all
 
 install: $(TARGET)

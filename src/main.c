@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: MIT
- * wireguard-c: WireGuard userspace implementation in C
+ * wgx: WireGuard userspace implementation in C
  *
  * Normal TUN mode:
- *   wireguard-c [-f|--foreground] INTERFACE-NAME
+ *   wgx [-f|--foreground] INTERFACE-NAME
  *
  * SOCKS5 proxy mode (no TUN, no kernel interface):
- *   wireguard-c --socks5 ADDR:PORT --wg-addr VPN-IP --config wg.conf
+ *   wgx --socks5 ADDR:PORT --config wg.conf
  */
 #include "wg.h"
 #include "device.h"
@@ -25,7 +25,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
-#define VERSION "0.1.0"
+#define VERSION "1.0.0"
 #define ENV_WG_TUN_FD              "WG_TUN_FD"
 #define ENV_WG_UAPI_FD             "WG_UAPI_FD"
 #define ENV_WG_PROCESS_FOREGROUND  "WG_PROCESS_FOREGROUND"
@@ -126,7 +126,7 @@ static int parse_socks5_arg(const char *s,
 
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("wireguard-c v%s\n\nUserspace WireGuard daemon for linux.\n"
+        printf("wgx v%s\n\nUserspace WireGuard client for linux.\n"
                "Information available at https://www.wireguard.com.\n", VERSION);
         return 0;
     }
@@ -329,13 +329,13 @@ int main(int argc, char *argv[]) {
         }
 
         fprintf(stderr,
-                "wireguard-c SOCKS5 proxy: %s:%u  VPN-IP=%s%s%s  config=%s\n",
+                "wgx SOCKS5 proxy: %s:%u  VPN-IP=%s%s%s  config=%s\n",
                 socks5_bind, socks5_port, wg_addr_str,
                 wg_addr6_str[0] ? "  VPN-IPv6=" : "",
                 wg_addr6_str[0] ? wg_addr6_str : "",
                 config_path);
     } else {
-        fprintf(stderr, "wireguard-c started on interface %s\n",
+        fprintf(stderr, "wgx started on interface %s\n",
                 g_device.ifname);
     }
 
@@ -356,6 +356,6 @@ int main(int argc, char *argv[]) {
     uv_run(&g_loop, UV_RUN_DEFAULT);
     uv_loop_close(&g_loop);
 
-    fprintf(stderr, "wireguard-c stopped\n");
+    fprintf(stderr, "wgx stopped\n");
     return 0;
 }

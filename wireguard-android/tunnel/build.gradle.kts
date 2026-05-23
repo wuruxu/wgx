@@ -20,6 +20,9 @@ android {
     namespace = "${pkg}.tunnel"
     defaultConfig {
         minSdk = 24
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
     externalNativeBuild {
         cmake {

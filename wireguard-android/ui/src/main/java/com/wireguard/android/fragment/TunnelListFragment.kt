@@ -32,6 +32,7 @@ import com.github.wuruxu.wgx.activity.TunnelCreatorActivity
 import com.github.wuruxu.wgx.databinding.ObservableKeyedRecyclerViewAdapter.RowConfigurationHandler
 import com.github.wuruxu.wgx.databinding.TunnelListFragmentBinding
 import com.github.wuruxu.wgx.databinding.TunnelListItemBinding
+import com.github.wuruxu.wgx.backend.Tunnel
 import com.github.wuruxu.wgx.model.ObservableTunnel
 import com.github.wuruxu.wgx.updater.SnackbarUpdateShower
 import com.github.wuruxu.wgx.util.ErrorMessages
@@ -41,6 +42,7 @@ import com.github.wuruxu.wgx.widget.MultiselectableRelativeLayout
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -51,6 +53,7 @@ class TunnelListFragment : BaseFragment() {
     private var actionMode: ActionMode? = null
     private var backPressedCallback: OnBackPressedCallback? = null
     private var binding: TunnelListFragmentBinding? = null
+    private var timerActive = false
     private val tunnelFileImportResultLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { data ->
         if (data == null) return@registerForActivityResult
         val activity = activity ?: return@registerForActivityResult
@@ -140,9 +143,25 @@ class TunnelListFragment : BaseFragment() {
         super.onDestroyView()
     }
 
+    override fun onResume() {
+        super.onResume()
+        timerActive = true
+        lifecycleScope.launch {
+            while (timerActive) {
+                updateStats()
+                delay(1000)
+            }
+        }
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putIntegerArrayList(CHECKED_ITEMS, actionModeListener.getCheckedItems())
+    }
+
+    override fun onStop() {
+        timerActive = false
+        super.onStop()
     }
 
     override fun onSelectedTunnelChanged(oldTunnel: ObservableTunnel?, newTunnel: ObservableTunnel?) {
@@ -202,6 +221,19 @@ class TunnelListFragment : BaseFragment() {
                 .show()
         else
             Toast.makeText(activity ?: Application.get(), message, Toast.LENGTH_SHORT).show()
+    }
+
+    private suspend fun updateStats() {
+        if (!isResumed) return
+        val tunnels = Application.getTunnelManager().getTunnels()
+        for (tunnel in tunnels) {
+            if (tunnel.state != Tunnel.State.UP) continue
+            try {
+                tunnel.getStatisticsAsync()
+            } catch (e: Throwable) {
+                Log.e(TAG, Log.getStackTraceString(e))
+            }
+        }
     }
 
     private fun viewForTunnel(tunnel: ObservableTunnel, tunnels: List<*>): MultiselectableRelativeLayout? {

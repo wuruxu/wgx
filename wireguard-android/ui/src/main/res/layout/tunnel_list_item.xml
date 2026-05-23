@@ -46,11 +46,27 @@
             android:layout_height="wrap_content"
             android:layout_alignParentStart="true"
             android:layout_centerVertical="true"
+            android:layout_toStartOf="@+id/tunnel_switch"
             android:ellipsize="end"
             android:maxLines="1"
             android:text="@{key}"
             android:textAppearance="?attr/textAppearanceBodyLarge"
+            app:tunnelNameState="@{item.state}"
             tools:text="@sample/interface_names.json/names/names/name" />
+
+        <TextView
+            android:id="@+id/tunnel_transfer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerHorizontal="true"
+            android:layout_centerVertical="true"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            app:transferStatistics="@{item.state == State.UP ? item.statistics : null}"
+            app:tunnelState="@{item.state}"
+            tools:text="↓ 1.23 MiB  ↑ 456 KiB"
+            tools:visibility="visible" />
 
         <com.github.wuruxu.wgx.widget.ToggleSwitch
             android:id="@+id/tunnel_switch"

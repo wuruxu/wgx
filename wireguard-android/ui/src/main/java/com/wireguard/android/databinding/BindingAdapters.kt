@@ -4,12 +4,14 @@
  */
 package com.github.wuruxu.wgx.databinding
 
+import android.content.res.ColorStateList
 import android.text.InputFilter
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.databinding.BindingAdapter
 import androidx.databinding.DataBindingUtil
 import androidx.databinding.ObservableList
@@ -20,7 +22,10 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.github.wuruxu.wgx.BR
 import com.github.wuruxu.wgx.R
+import com.github.wuruxu.wgx.backend.Statistics
+import com.github.wuruxu.wgx.backend.Tunnel
 import com.github.wuruxu.wgx.databinding.ObservableKeyedRecyclerViewAdapter.RowConfigurationHandler
+import com.github.wuruxu.wgx.util.QuantityFormatter
 import com.github.wuruxu.wgx.widget.ToggleSwitch
 import com.github.wuruxu.wgx.widget.ToggleSwitch.OnBeforeCheckedChangeListener
 import com.github.wuruxu.wgx.widget.TvCardView
@@ -167,6 +172,35 @@ object BindingAdapters {
     @BindingAdapter("android:text")
     fun setStringSetText(view: TextView, strings: Iterable<String?>?) {
         view.text = if (strings != null) Attribute.join(strings) else ""
+    }
+
+    @JvmStatic
+    @BindingAdapter("transferStatistics", "tunnelState")
+    fun setTransferStatistics(view: TextView, statistics: Statistics?, state: Tunnel.State?) {
+        if (state != Tunnel.State.UP || statistics == null) {
+            view.visibility = View.GONE
+            view.text = ""
+            return
+        }
+        view.text = view.context.getString(
+            R.string.transfer_rx_tx_arrows,
+            QuantityFormatter.formatBytes(statistics.totalRx()),
+            QuantityFormatter.formatBytes(statistics.totalTx())
+        )
+        view.visibility = View.VISIBLE
+    }
+
+    @JvmStatic
+    @BindingAdapter("tunnelNameState")
+    fun setTunnelNameState(view: TextView, state: Tunnel.State?) {
+        val defaultColors = ListenerUtil.getListener<ColorStateList>(view, R.id.tunnel_name_text_colors)
+            ?: view.textColors.also {
+                ListenerUtil.trackListener(view, it, R.id.tunnel_name_text_colors)
+            }
+        if (state == Tunnel.State.UP)
+            view.setTextColor(ContextCompat.getColor(view.context, R.color.tunnel_name_up))
+        else
+            view.setTextColor(defaultColors)
     }
 
     @JvmStatic

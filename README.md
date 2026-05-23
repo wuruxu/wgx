@@ -45,14 +45,14 @@ Linux is the primary target.
 Dependencies:
 
 - libuv
-- OpenSSL / libcrypto
+- libsodium
 - c-ares
 - pthread
 
 On Debian / Ubuntu:
 
 ```bash
-sudo apt install build-essential libuv1-dev libssl-dev libc-ares-dev
+sudo apt install build-essential libuv1-dev libsodium-dev libc-ares-dev
 ```
 
 ## Build
