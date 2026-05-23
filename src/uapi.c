@@ -382,6 +382,19 @@ static void process_request(uapi_conn_t *conn) {
     send_response(conn, "errno=95\n\n", 10); /* EOPNOTSUPP */
 }
 
+int uapi_set_config(wg_device_t *dev, const char *settings) {
+    if (!dev || !settings)
+        return EINVAL;
+    return process_set(dev, settings);
+}
+
+char *uapi_get_config(wg_device_t *dev) {
+    if (!dev)
+        return NULL;
+    size_t len;
+    return build_get_response(dev, &len);
+}
+
 static void on_conn_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
     uapi_conn_t *conn = stream->data;
 

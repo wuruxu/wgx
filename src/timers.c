@@ -5,7 +5,6 @@
 #include "device.h"
 #include <stdlib.h>
 #include <string.h>
-#include <openssl/rand.h>
 
 /* Timer callbacks are called from the libuv event loop */
 
@@ -27,7 +26,7 @@ static void cb_retransmit_handshake(uv_timer_t *handle) {
 
     /* Restart with jitter */
     uint32_t jitter;
-    RAND_bytes((uint8_t *)&jitter, sizeof(jitter));
+    wg_random_bytes((uint8_t *)&jitter, sizeof(jitter));
     jitter %= REKEY_TIMEOUT_JITTER_MAX_MS;
     uv_timer_start(handle, cb_retransmit_handshake,
                    REKEY_TIMEOUT_MS + jitter, 0);
@@ -143,7 +142,7 @@ void timers_handshake_initiated(wg_device_t *dev, wg_peer_t *peer) {
     (void)dev;
     if (!peer->timers_active) return;
     uint32_t jitter;
-    RAND_bytes((uint8_t *)&jitter, sizeof(jitter));
+    wg_random_bytes((uint8_t *)&jitter, sizeof(jitter));
     jitter %= REKEY_TIMEOUT_JITTER_MAX_MS;
     uv_timer_start(&peer->timer_retransmit_handshake,
                    cb_retransmit_handshake,

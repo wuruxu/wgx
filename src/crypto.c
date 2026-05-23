@@ -1,17 +1,57 @@
 /* SPDX-License-Identifier: MIT */
 #include "crypto.h"
 #include <string.h>
+#ifdef WGX_ANDROID
+#include <fcntl.h>
+#include <unistd.h>
+#include "monocypher.h"
+#else
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
+#endif
 
 /* ---- Secure memory ---- */
 void wg_memzero(void *p, size_t len) {
+#ifdef WGX_ANDROID
+    crypto_wipe(p, len);
+#else
     OPENSSL_cleanse(p, len);
+#endif
 }
 
 int wg_ct_equal(const void *a, const void *b, size_t len) {
+#ifdef WGX_ANDROID
+    const uint8_t *x = a;
+    const uint8_t *y = b;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < len; ++i)
+        diff |= x[i] ^ y[i];
+    return diff == 0;
+#else
     return CRYPTO_memcmp(a, b, len) == 0;
+#endif
+}
+
+int wg_random_bytes(uint8_t *out, size_t len) {
+#ifdef WGX_ANDROID
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, out + off, len - off);
+        if (n <= 0) {
+            close(fd);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    close(fd);
+    return 0;
+#else
+    return RAND_bytes(out, (int)len) == 1 ? 0 : -1;
+#endif
 }
 
 /* ---- Curve25519 ---- */
@@ -21,23 +61,32 @@ void wg_clamp_private_key(uint8_t priv[WG_KEY_LEN]) {
 }
 
 int wg_generate_private_key(uint8_t priv[WG_KEY_LEN]) {
-    if (RAND_bytes(priv, WG_KEY_LEN) != 1)
+    if (wg_random_bytes(priv, WG_KEY_LEN) != 0)
         return -1;
     wg_clamp_private_key(priv);
     return 0;
 }
 
 void wg_generate_public_key(uint8_t pub[WG_KEY_LEN], const uint8_t priv[WG_KEY_LEN]) {
+#ifdef WGX_ANDROID
+    crypto_x25519_public_key(pub, priv);
+#else
     EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL, priv, WG_KEY_LEN);
     if (!pkey) return;
     size_t len = WG_KEY_LEN;
     EVP_PKEY_get_raw_public_key(pkey, pub, &len);
     EVP_PKEY_free(pkey);
+#endif
 }
 
 int wg_dh(uint8_t shared[WG_KEY_LEN],
           const uint8_t priv[WG_KEY_LEN],
           const uint8_t pub[WG_KEY_LEN]) {
+#ifdef WGX_ANDROID
+    crypto_x25519(shared, priv, pub);
+    uint8_t zero[WG_KEY_LEN] = {0};
+    return wg_ct_equal(shared, zero, WG_KEY_LEN) ? -1 : 0;
+#else
     int ret = -1;
     EVP_PKEY *local  = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL, priv, WG_KEY_LEN);
     EVP_PKEY *remote = EVP_PKEY_new_raw_public_key (EVP_PKEY_X25519, NULL, pub,  WG_KEY_LEN);
@@ -57,9 +106,11 @@ out:
     EVP_PKEY_free(local);
     EVP_PKEY_free(remote);
     return ret;
+#endif
 }
 
 /* ---- ChaCha20-Poly1305 ---- */
+#ifndef WGX_ANDROID
 #ifdef __GNUC__
 #define THREAD_LOCAL __thread
 #elif defined(_MSC_VER)
@@ -73,12 +124,19 @@ out:
 
 static THREAD_LOCAL EVP_CIPHER_CTX *t_encrypt_ctx = NULL;
 static THREAD_LOCAL EVP_CIPHER_CTX *t_decrypt_ctx = NULL;
+#endif
 
 int wg_chacha20poly1305_encrypt(uint8_t *out,
                                 const uint8_t key[WG_KEY_LEN],
                                 const uint8_t nonce[WG_NONCE_LEN],
                                 const uint8_t *plaintext, size_t ptlen,
                                 const uint8_t *aad, size_t aadlen) {
+#ifdef WGX_ANDROID
+    crypto_aead_ctx ctx;
+    crypto_aead_init_ietf(&ctx, key, nonce);
+    crypto_aead_write(&ctx, out, out + ptlen, aad, aadlen, plaintext, ptlen);
+    return 0;
+#else
     if (!t_encrypt_ctx) {
         t_encrypt_ctx = EVP_CIPHER_CTX_new();
     }
@@ -101,6 +159,7 @@ int wg_chacha20poly1305_encrypt(uint8_t *out,
     ret = 0;
 out:
     return ret;
+#endif
 }
 
 int wg_chacha20poly1305_decrypt(uint8_t *out,
@@ -111,6 +170,11 @@ int wg_chacha20poly1305_decrypt(uint8_t *out,
     if (ctlen < WG_AEAD_TAG_LEN) return -1;
     size_t datalen = ctlen - WG_AEAD_TAG_LEN;
     const uint8_t *tag = ciphertext + datalen;
+#ifdef WGX_ANDROID
+    crypto_aead_ctx ctx;
+    crypto_aead_init_ietf(&ctx, key, nonce);
+    return crypto_aead_read(&ctx, out, tag, aad, aadlen, ciphertext, datalen);
+#else
 
     if (!t_decrypt_ctx) {
         t_decrypt_ctx = EVP_CIPHER_CTX_new();
@@ -132,12 +196,14 @@ int wg_chacha20poly1305_decrypt(uint8_t *out,
     ret = 0;
 out:
     return ret;
+#endif
 }
 
 /* ---- XChaCha20-Poly1305 ----
  * Derive subkey via HChaCha20, then use ChaCha20-Poly1305.
  */
 
+#ifndef WGX_ANDROID
 /* HChaCha20: takes 32-byte key and 16-byte input, produces 32-byte output */
 static void hchacha20(uint8_t out[32],
                       const uint8_t key[32],
@@ -197,12 +263,17 @@ static void hchacha20(uint8_t out[32],
     memcpy(out,      s,      16);
     memcpy(out + 16, s + 12, 16);
 }
+#endif
 
 int wg_xchacha20poly1305_encrypt(uint8_t *out,
                                  const uint8_t key[WG_KEY_LEN],
                                  const uint8_t nonce[WG_XNONCE_LEN],
                                  const uint8_t *plaintext, size_t ptlen,
                                  const uint8_t *aad, size_t aadlen) {
+#ifdef WGX_ANDROID
+    crypto_aead_lock(out, out + ptlen, key, nonce, aad, aadlen, plaintext, ptlen);
+    return 0;
+#else
     uint8_t subkey[32];
     uint8_t subnonce[WG_NONCE_LEN];
     uint8_t tmp_nonce[16];
@@ -214,6 +285,7 @@ int wg_xchacha20poly1305_encrypt(uint8_t *out,
                                           plaintext, ptlen, aad, aadlen);
     wg_memzero(subkey, sizeof(subkey));
     return ret;
+#endif
 }
 
 int wg_xchacha20poly1305_decrypt(uint8_t *out,
@@ -221,6 +293,12 @@ int wg_xchacha20poly1305_decrypt(uint8_t *out,
                                  const uint8_t nonce[WG_XNONCE_LEN],
                                  const uint8_t *ciphertext, size_t ctlen,
                                  const uint8_t *aad, size_t aadlen) {
+#ifdef WGX_ANDROID
+    if (ctlen < WG_AEAD_TAG_LEN) return -1;
+    size_t datalen = ctlen - WG_AEAD_TAG_LEN;
+    return crypto_aead_unlock(out, ciphertext + datalen, key, nonce,
+                              aad, aadlen, ciphertext, datalen);
+#else
     uint8_t subkey[32];
     uint8_t subnonce[WG_NONCE_LEN];
     uint8_t tmp_nonce[16];
@@ -232,6 +310,7 @@ int wg_xchacha20poly1305_decrypt(uint8_t *out,
                                           ciphertext, ctlen, aad, aadlen);
     wg_memzero(subkey, sizeof(subkey));
     return ret;
+#endif
 }
 
 /* ---- BLAKE2s ---- */

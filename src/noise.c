@@ -5,7 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef WGX_ANDROID
 #include <openssl/rand.h>
+#endif
 #include <arpa/inet.h>
 
 /* ---- Helper: mix hash and chain key ---- */
@@ -96,7 +98,7 @@ void index_table_free(index_table_t *t) {
 static uint32_t pick_random_index(index_table_t *t) {
     uint32_t idx;
     do {
-        RAND_bytes((uint8_t *)&idx, sizeof(idx));
+        wg_random_bytes((uint8_t *)&idx, sizeof(idx));
         idx &= (INDEX_TABLE_SIZE - 1);
     } while (t->occupied[idx]);
     return idx;
@@ -259,7 +261,7 @@ int cookie_validate_macs(wg_cookie_checker_t *cc,
     /* Refresh secret if expired */
     if (!cc->mac2_secret_set_ms ||
         (now_ms - cc->mac2_secret_set_ms >= COOKIE_REFRESH_TIME_MS)) {
-        RAND_bytes(cc->mac2_secret, WG_HASH_LEN);
+        wg_random_bytes(cc->mac2_secret, WG_HASH_LEN);
         cc->mac2_secret_set_ms = now_ms;
     }
     uint8_t expected_cookie[WG_COOKIE_LEN];
@@ -281,12 +283,12 @@ void cookie_create_reply(wg_cookie_checker_t *cc,
                           uint64_t now_ms) {
     reply->type     = wg_cpu_to_le32(MSG_COOKIE_REPLY);
     reply->receiver = wg_cpu_to_le32(receiver);
-    RAND_bytes(reply->nonce, WG_XNONCE_LEN);
+    wg_random_bytes(reply->nonce, WG_XNONCE_LEN);
 
     pthread_mutex_lock(&cc->mutex);
     if (!cc->mac2_secret_set_ms ||
         (now_ms - cc->mac2_secret_set_ms >= COOKIE_REFRESH_TIME_MS)) {
-        RAND_bytes(cc->mac2_secret, WG_HASH_LEN);
+        wg_random_bytes(cc->mac2_secret, WG_HASH_LEN);
         cc->mac2_secret_set_ms = now_ms;
     }
     uint8_t cookie[WG_COOKIE_LEN];

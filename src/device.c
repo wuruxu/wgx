@@ -5,9 +5,11 @@
 #include "tun.h"
 #include "timers.h"
 #include "uapi.h"
+#ifndef WGX_ANDROID
 #include "tcpstack.h"
 #include "tcp_worker.h"
 #include "socks5.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -417,8 +419,10 @@ int device_send_keepalive(wg_device_t *dev, wg_peer_t *peer) {
 }
 
 int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len) {
+#ifndef WGX_ANDROID
     if (dev->socks5_mode && dev->tcp_worker)
         return tcp_worker_enqueue_outbound(dev->tcp_worker, pkt, len);
+#endif
     if (len < 20)
         return -1;
 
@@ -719,12 +723,14 @@ static void handle_transport(wg_device_t *dev,
 
     /* Deliver plaintext if non-empty */
     if (ptlen > 0) {
+#ifndef WGX_ANDROID
         if (dev->socks5_mode && dev->tcp_worker) {
             tcp_worker_enqueue_inbound(dev->tcp_worker, plaintext, ptlen);
         } else if (dev->socks5_mode && dev->tcpstack) {
             /* Legacy single-loop SOCKS5 mode */
             tcpstack_input(dev->tcpstack, plaintext, ptlen);
         } else {
+#endif
             /* TUN mode: verify allowed IPs then write to TUN */
             int allowed = 0;
             if (ptlen >= 1) {
@@ -749,7 +755,9 @@ static void handle_transport(wg_device_t *dev,
                 tun_write(dev->tun_fd, plaintext, ptlen);
             else
                 wg_dbg(dev, "Dropped packet from peer: not in allowed IPs");
+#ifndef WGX_ANDROID
         }
+#endif
     } else {
         /* Keepalive received */
         timers_keepalive_received(dev, peer);
@@ -968,12 +976,14 @@ int device_start(wg_device_t *dev) {
         uv_poll_start(&dev->tun_poll, UV_READABLE, on_tun_readable);
     }
 
-    /* Start UAPI server (skipped in SOCKS5 mode) */
+    /* Start UAPI server (skipped in SOCKS5 mode and Android JNI mode) */
+#ifndef WGX_ANDROID
     if (!dev->socks5_mode) {
         snprintf(dev->uapi_path, sizeof(dev->uapi_path),
                  "/var/run/wireguard/%s.sock", dev->ifname);
         uapi_start(dev);
     }
+#endif
 
     wg_dbg(dev, "Device started on port %u (IPv6: %s)",
            dev->listen_port, dev->udp6_active ? "yes" : "no");
@@ -995,9 +1005,12 @@ void device_stop(wg_device_t *dev) {
         uv_udp_recv_stop(&dev->udp6);
         uv_close((uv_handle_t *)&dev->udp6, NULL);
     }
+#ifndef WGX_ANDROID
     if (!dev->socks5_mode)
         uapi_stop(dev);
+#endif
 
+#ifndef WGX_ANDROID
     if (dev->socks5_mode && dev->tcp_worker) {
         tcp_worker_stop(dev->tcp_worker);
     }
@@ -1011,6 +1024,7 @@ void device_stop(wg_device_t *dev) {
         free(dev->tcpstack);
         dev->tcpstack = NULL;
     }
+#endif
 }
 
 void device_free(wg_device_t *dev) {

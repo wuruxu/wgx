@@ -95,3 +95,6 @@ void wg_clamp_private_key(uint8_t priv[WG_KEY_LEN]);
 int wg_ct_equal(const void *a, const void *b, size_t len);
 /* Secure memory zeroing */
 void wg_memzero(void *p, size_t len);
+
+/* Fill random bytes. Returns 0 on success. */
+int wg_random_bytes(uint8_t *out, size_t len);
