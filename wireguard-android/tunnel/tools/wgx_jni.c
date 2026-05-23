@@ -120,6 +120,7 @@ static void *wgx_thread(void *arg) {
     uv_run(&handle->loop, UV_RUN_DEFAULT);
 
     uv_close((uv_handle_t *)&handle->stop_async, async_close_cb);
+    device_remove_all_peers(&handle->dev);
     uv_run(&handle->loop, UV_RUN_DEFAULT);
     device_free(&handle->dev);
     uv_loop_close(&handle->loop);
