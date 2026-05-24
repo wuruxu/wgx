@@ -11,8 +11,8 @@
 #include "device.h"
 #include "uapi.h"
 
-#define WGX_VERSION "wgx 0.1.0"
-#define WGX_MAX_HANDLES 1024
+#define WGX_VERSION "260522"
+#define WGX_MAX_HANDLES 2048
 
 typedef struct {
     int id;

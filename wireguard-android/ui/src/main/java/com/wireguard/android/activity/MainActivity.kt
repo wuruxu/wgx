@@ -9,9 +9,10 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.ImageButton
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
-import androidx.appcompat.app.ActionBar
+import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
@@ -26,9 +27,10 @@ import com.github.wuruxu.wgx.model.ObservableTunnel
  * editing the configuration and interface state of WireGuard tunnels.
  */
 class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener {
-    private var actionBar: ActionBar? = null
     private var isTwoPaneLayout = false
+    private var showBackButton = false
     private var backPressedCallback: OnBackPressedCallback? = null
+    private lateinit var toolbarHomeButton: ImageButton
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
@@ -49,16 +51,24 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     override fun onBackStackChanged() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
         backPressedCallback?.isEnabled = backStackEntries >= 1
-        if (actionBar == null) return
         // Do not show the home menu when the two-pane layout is at the detail view (see above).
         val minBackStackEntries = if (isTwoPaneLayout) 2 else 1
-        actionBar!!.setDisplayHomeAsUpEnabled(backStackEntries >= minBackStackEntries)
+        showBackButton = backStackEntries >= minBackStackEntries
+        toolbarHomeButton.setImageResource(if (showBackButton) R.drawable.ic_arrow_back else R.drawable.app_icon_actionbar)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.main_activity)
-        actionBar = supportActionBar
+        setSupportActionBar(findViewById<Toolbar>(R.id.main_toolbar))
+        supportActionBar?.apply {
+            setDisplayShowTitleEnabled(false)
+            setDisplayHomeAsUpEnabled(false)
+        }
+        toolbarHomeButton = findViewById(R.id.main_toolbar_home)
+        toolbarHomeButton.setOnClickListener {
+            if (showBackButton) handleBackPressed()
+        }
         isTwoPaneLayout = findViewById<View?>(R.id.master_detail_wrapper) != null
         supportFragmentManager.addOnBackStackChangedListener(this)
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }

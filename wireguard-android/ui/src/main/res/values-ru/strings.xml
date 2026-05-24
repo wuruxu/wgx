@@ -270,7 +270,7 @@
     <string name="version_summary">Бэкенд: %1$s %2$s</string>
     <string name="version_summary_checking">Проверка версии бэкэнда %s</string>
     <string name="version_summary_unknown">Неизвестная версия %s</string>
-    <string name="version_title">WireGuard для Android v%s</string>
+    <string name="version_title">wgx для Android v%s</string>
     <string name="vpn_not_authorized_error">Сервис VPN не авторизован пользователем</string>
     <string name="vpn_start_error">Не удалось запустить службу Android VPN</string>
     <string name="zip_export_error">Не удалось экспортировать туннели: %s</string>

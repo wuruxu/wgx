@@ -162,7 +162,7 @@
     <string name="version_summary">%1$s बैकएंड %2$s</string>
     <string name="version_summary_checking">%s बैकएंड संस्करण की जाँच कर रहा है</string>
     <string name="version_summary_unknown">अज्ञात %s संस्करण</string>
-    <string name="version_title">WireGuard for Android v%s</string>
+    <string name="version_title">wgx for Android v%s</string>
     <string name="vpn_not_authorized_error">वीपीएन सेवा उपयोगकर्ता द्वारा अधिकृत नहीं है</string>
     <string name="vpn_start_error">एंड्रॉयड वीपीएन सेवा प्रारंभ करने में असमर्थ</string>
     <string name="zip_export_error">टनल का निर्यात करने में असमर्थ: %s</string>

@@ -231,7 +231,7 @@
     <string name="version_summary">%1$s 後端 %2$s</string>
     <string name="version_summary_checking">檢查 %s 後端版本</string>
     <string name="version_summary_unknown">未知的版本 %s</string>
-    <string name="version_title">WireGuard 於 Android 版本 %s</string>
+    <string name="version_title">wgx 於 Android 版本 %s</string>
     <string name="vpn_not_authorized_error">使用者未授權 VPN 服務</string>
     <string name="vpn_start_error">無法開啟 Android VPN 服務</string>
     <string name="zip_export_error">無法匯入通道: %s</string>

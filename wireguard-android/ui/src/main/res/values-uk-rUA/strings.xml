@@ -270,7 +270,7 @@
     <string name="version_summary">%1$s backend %2$s</string>
     <string name="version_summary_checking">Перевірка %s backend версії</string>
     <string name="version_summary_unknown">Невідома версія %s</string>
-    <string name="version_title">WireGuard for Android v%s</string>
+    <string name="version_title">wgx for Android v%s</string>
     <string name="vpn_not_authorized_error">Служба VPN не авторизована користувачем</string>
     <string name="vpn_start_error">Не вдалося запустити службу Android VPN</string>
     <string name="zip_export_error">Не вдалося експортувати тунелі: %s</string>

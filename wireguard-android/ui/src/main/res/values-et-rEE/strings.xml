@@ -242,7 +242,7 @@ Aitäh veelkord sinu panuse eest.</string>
     <string name="version_summary">%1$s taustsüsteem %2$s</string>
     <string name="version_summary_checking">Kontrollin %s taustsüsteemi versiooni</string>
     <string name="version_summary_unknown">Tundmatu %s versioon</string>
-    <string name="version_title">WireGuard Androidile v%s</string>
+    <string name="version_title">wgx Androidile v%s</string>
     <string name="vpn_not_authorized_error">Kasutaja ei lubanud VPN teenust</string>
     <string name="vpn_start_error">Androidi VPN teenuse käivitamine ebaõnnestus</string>
     <string name="zip_export_error">Tunnelite eksportimine ebaõnnestus: %s</string>

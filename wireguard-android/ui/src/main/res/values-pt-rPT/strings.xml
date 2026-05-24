@@ -219,7 +219,7 @@
     <string name="unknown_error">Erro desconhecido</string>
     <string name="version_summary_checking">A verificar versão de backend %s</string>
     <string name="version_summary_unknown">Versão %s desconhecida</string>
-    <string name="version_title">WireGuard para Android v%s</string>
+    <string name="version_title">wgx para Android v%s</string>
     <string name="vpn_not_authorized_error">Serviço VPN não foi autorizado pelo utilizador</string>
     <string name="vpn_start_error">Não foi possível iniciar o serviço de VPN do Android</string>
     <string name="zip_export_error">Não foi possível exportar túneis: %s</string>

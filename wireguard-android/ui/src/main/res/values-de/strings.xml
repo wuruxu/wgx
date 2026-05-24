@@ -244,7 +244,7 @@
     <string name="version_summary">%1$s Backend %2$s</string>
     <string name="version_summary_checking">Überprüfe %s Backend-Version</string>
     <string name="version_summary_unknown">Unbekannte %s Version</string>
-    <string name="version_title">WireGuard für Android v%s</string>
+    <string name="version_title">wgx für Android v%s</string>
     <string name="vpn_not_authorized_error">VPN-Dienst durch Nutzer nicht autorisiert</string>
     <string name="vpn_start_error">Android VPN-Dienst konnte nicht gestartet werden</string>
     <string name="zip_export_error">Kann Tunnel nicht exportieren: %s</string>

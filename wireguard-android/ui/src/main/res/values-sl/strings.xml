@@ -270,7 +270,7 @@
     <string name="version_summary">Zaledje %1$s %2$s</string>
     <string name="version_summary_checking">Preverjam verzijo zaledja %s</string>
     <string name="version_summary_unknown">Neznana verzija %s</string>
-    <string name="version_title">WireGuard za Android v%s</string>
+    <string name="version_title">wgx za Android v%s</string>
     <string name="vpn_not_authorized_error">Uporabnik ni odobril storitve VPN</string>
     <string name="vpn_start_error">Storitve Android VPN ni bilo mogoče zagnati</string>
     <string name="zip_export_error">Tunelov ni bilo mogoče izvoziti: %s</string>

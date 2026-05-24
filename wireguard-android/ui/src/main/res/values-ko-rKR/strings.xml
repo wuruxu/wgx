@@ -231,7 +231,7 @@
     <string name="version_summary">%1$s 백엔드 %2$s</string>
     <string name="version_summary_checking">%s 백엔드 버전 확인 중</string>
     <string name="version_summary_unknown">알 수 없는 버전: %s</string>
-    <string name="version_title">WireGuard for 안드로이드 v%s</string>
+    <string name="version_title">wgx for 안드로이드 v%s</string>
     <string name="vpn_not_authorized_error">VPN 서비스는 사용자에 의해 승인되지 않았음</string>
     <string name="vpn_start_error">안드로이드 VPN 서비스를 시작할 수 없음</string>
     <string name="zip_export_error">터널을 내보낼 수 없음: %s</string>

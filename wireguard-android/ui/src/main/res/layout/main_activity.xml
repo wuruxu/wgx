@@ -3,6 +3,7 @@
   ~ SPDX-License-Identifier: Apache-2.0
   -->
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main_activity_container"
     android:layout_width="match_parent"
@@ -10,10 +11,53 @@
     android:fitsSystemWindows="true"
     tools:context=".activity.MainActivity">
 
-    <androidx.fragment.app.FragmentContainerView
-        android:id="@+id/list_detail_container"
-        android:name="com.github.wuruxu.wgx.fragment.TunnelListFragment"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:tag="LIST" />
+        android:orientation="vertical">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="?attr/colorSurface">
+
+            <androidx.appcompat.widget.Toolbar
+                android:id="@+id/main_toolbar"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                app:contentInsetEnd="0dp"
+                app:contentInsetStart="0dp"
+                app:title="" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/main_toolbar_home"
+                android:layout_width="?attr/actionBarSize"
+                android:layout_height="match_parent"
+                android:layout_gravity="start|center_vertical"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/app_name"
+                android:padding="14dp"
+                android:scaleType="center"
+                android:src="@drawable/app_icon_actionbar" />
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/main_toolbar_title"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="@string/app_name"
+                android:textAppearance="?attr/textAppearanceTitleLarge"
+                android:textColor="?attr/colorOnSurface" />
+        </FrameLayout>
+
+        <androidx.fragment.app.FragmentContainerView
+            android:id="@+id/list_detail_container"
+            android:name="com.github.wuruxu.wgx.fragment.TunnelListFragment"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:tag="LIST" />
+    </LinearLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

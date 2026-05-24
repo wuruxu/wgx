@@ -231,7 +231,7 @@
     <string name="version_summary">%1$s backend %2$s</string>
     <string name="version_summary_checking">正在检查 %s backend 版本</string>
     <string name="version_summary_unknown">未知的 %s 版本</string>
-    <string name="version_title">WireGuard for Android v%s</string>
+    <string name="version_title">wgx for Android v%s</string>
     <string name="vpn_not_authorized_error">用户未授权 VPN 服务</string>
     <string name="vpn_start_error">无法启动 Android VPN 服务</string>
     <string name="zip_export_error">无法导出隧道配置：%s</string>

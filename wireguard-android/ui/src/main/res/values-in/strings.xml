@@ -231,7 +231,7 @@
     <string name="version_summary">%1$s dengan v%2$s</string>
     <string name="version_summary_checking">Mengecek versi backend %s</string>
     <string name="version_summary_unknown">Versi %s Tidak diketahui</string>
-    <string name="version_title">WireGuard untuk Android v%s</string>
+    <string name="version_title">wgx untuk Android v%s</string>
     <string name="vpn_not_authorized_error">Layanan VPN tidak diotorisasi oleh pengguna</string>
     <string name="vpn_start_error">Tidak dapat memulai layanan VPN Android</string>
     <string name="zip_export_error">Tunel %s tidak bisa diekspor</string>

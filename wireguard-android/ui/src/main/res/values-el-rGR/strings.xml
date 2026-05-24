@@ -138,7 +138,7 @@
     <string name="updater_corrupt_title">Κατεστραμμένη εφαρμογή</string>
     <string name="updater_corrupt_navigate">Άνοιγμα ιστοτόπου</string>
     <string name="version_summary_unknown">Άγνωστη έκδοση %s</string>
-    <string name="version_title">WireGuard για Android v%s</string>
+    <string name="version_title">wgx για Android v%s</string>
     <string name="biometric_auth_error">Αποτυχία ελέγχου ταυτότητας</string>
     <string name="biometric_auth_error_reason">Αποτυχία ελέγχου ταυτότητας: %s</string>
 </resources>

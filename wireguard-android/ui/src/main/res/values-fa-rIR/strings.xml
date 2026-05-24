@@ -246,7 +246,7 @@
     <string name="version_summary">%1$s بک اند %2$s</string>
     <string name="version_summary_checking">در حال بررسی نگارش پس‌زمینه %s</string>
     <string name="version_summary_unknown">نگارش %s ناشناخته</string>
-    <string name="version_title">WireGuard برای اندروید نگارش %s</string>
+    <string name="version_title">wgx برای اندروید نگارش %s</string>
     <string name="vpn_not_authorized_error">کاربر به سرویس VPN اجازه نداد</string>
     <string name="vpn_start_error">نمی‌توان سرویس VPN اندروید را آغاز کرد</string>
     <string name="zip_export_error">نمی‌توان تونل‌ها را برون‎برد: %s</string>

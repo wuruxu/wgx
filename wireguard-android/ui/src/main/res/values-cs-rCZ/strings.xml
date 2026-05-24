@@ -270,7 +270,7 @@
     <string name="version_summary">%1$s backend %2$s</string>
     <string name="version_summary_checking">Kontroluji verzi %s backendu</string>
     <string name="version_summary_unknown">Neznámá verze %s</string>
-    <string name="version_title">WireGuard pro Android v%s</string>
+    <string name="version_title">wgx pro Android v%s</string>
     <string name="vpn_not_authorized_error">Služba VPN není autorizována uživatelem</string>
     <string name="vpn_start_error">Nelze spustit službu VPN pro Android</string>
     <string name="zip_export_error">Nelze exportovat tunely: %s</string>

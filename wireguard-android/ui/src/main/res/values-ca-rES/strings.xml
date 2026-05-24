@@ -244,7 +244,7 @@
     <string name="version_summary">%1$s backend %2$s</string>
     <string name="version_summary_checking">Comprovant la versió de backend %s</string>
     <string name="version_summary_unknown">Versió de %s desconeguda</string>
-    <string name="version_title">WireGuard per a Android v%s</string>
+    <string name="version_title">wgx per a Android v%s</string>
     <string name="vpn_not_authorized_error">Servei de VPN no autoritzat per l\'usuari</string>
     <string name="vpn_start_error">No s\'ha pogut iniciar el servei de VPN de Android</string>
     <string name="zip_export_error">No s\'han pogut exportar els túnels: %s</string>

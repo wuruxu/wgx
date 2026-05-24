@@ -239,7 +239,7 @@
     <string name="updater_corrupt_message">De toepassing is beschadigd. Download de APK opnieuw van de onderstaande website. De-installeer daarna het programma, en herinstalleer het met de gedownloade APK.</string>
     <string name="updater_corrupt_navigate">Open website</string>
     <string name="version_summary_unknown">Onbekende versie: %s</string>
-    <string name="version_title">WireGuard voor Android v%s</string>
+    <string name="version_title">wgx voor Android v%s</string>
     <string name="vpn_not_authorized_error">VPN-service niet geautoriseerd door gebruiker</string>
     <string name="zip_export_summary">Zip-bestand wordt opgeslagen in de downloadmap</string>
     <string name="zip_export_title">Exporteer tunnels naar zip-bestand</string>

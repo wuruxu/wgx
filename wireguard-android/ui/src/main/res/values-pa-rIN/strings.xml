@@ -244,7 +244,7 @@
     <string name="version_summary">%1$s ਬੈਕਐਂਡ %2$s</string>
     <string name="version_summary_checking">%s ਬੈਕਐਂਡ ਵਰਜ਼ਨ ਦੀ ਜਾਂਚ ਕੀਤੀ ਜਾ ਰਹੀ ਹੈ</string>
     <string name="version_summary_unknown">ਅਣਪਛਾਤਾ %s ਵਰਜਨ</string>
-    <string name="version_title">Android ਲਈ WireGuard v%s</string>
+    <string name="version_title">Android ਲਈ wgx v%s</string>
     <string name="vpn_not_authorized_error">VPN ਸੇਵਾ ਨੂੰ ਵਰਤੋਂਕਾਰ ਨੇ ਪਰਮਾਣਿਤ ਨਹੀਂ ਕੀਤਾ</string>
     <string name="vpn_start_error">ਐਂਡਰਾਈਡ VPN ਸੇਵਾ ਸ਼ੁਰੂ ਕਰਨ ਲਈ ਅਸਮਰੱਥ</string>
     <string name="zip_export_error">ਟਨਲਾਂ ਐਕਸਪੋਰਟ ਕਰਨ ਲਈ ਅਸਮਰੱਥ: %s</string>
