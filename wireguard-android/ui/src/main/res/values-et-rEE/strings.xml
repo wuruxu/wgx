@@ -215,6 +215,11 @@ Aitäh veelkord sinu panuse eest.</string>
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">sisse: %1$s, välja: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN-i olek</string>
+    <string name="wgx_vpn_notification_content">Võrguliiklus · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Katkesta ühendus</string>
+    <string name="wgx_vpn_notification_title">%1$s ühendatud</string>
     <string name="tun_create_error">Tunnelit ei saa luua</string>
     <string name="tunnel_config_error">Tunneli seadistamine ebaõnnestus (wg-quick tagastas %d)</string>
     <string name="tunnel_create_error">Tunneli loomine ebaõnnestus: %s</string>

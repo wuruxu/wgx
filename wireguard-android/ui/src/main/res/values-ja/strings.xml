@@ -204,6 +204,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">受信: %1$s, 送信: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN の状態</string>
+    <string name="wgx_vpn_notification_content">ネットワークトラフィック · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">切断</string>
+    <string name="wgx_vpn_notification_title">%1$s 接続済み</string>
     <string name="tun_create_error">tun デバイスを作成できません</string>
     <string name="tunnel_config_error">トンネルを設定できません (wg-quick が %d を返却)</string>
     <string name="tunnel_create_error">トンネルを作成できません: %s</string>

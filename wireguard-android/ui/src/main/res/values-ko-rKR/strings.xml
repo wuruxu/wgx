@@ -204,6 +204,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">수신: %1$s, 송신: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN 상태</string>
+    <string name="wgx_vpn_notification_content">네트워크 트래픽 · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">연결 해제</string>
+    <string name="wgx_vpn_notification_title">%1$s 연결됨</string>
     <string name="tun_create_error">tun 장치를 만들 수 없음</string>
     <string name="tunnel_config_error">터널을 설정할 수 없음 (wg-quick가 %d을 반환함)</string>
     <string name="tunnel_create_error">터널을 생성할 수 없음: %s</string>

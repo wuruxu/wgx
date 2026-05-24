@@ -217,6 +217,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN ਸਥਿਤੀ</string>
+    <string name="wgx_vpn_notification_content">ਨੈੱਟਵਰਕ ਟ੍ਰੈਫਿਕ · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">ਡਿਸਕਨੈਕਟ ਕਰੋ</string>
+    <string name="wgx_vpn_notification_title">%1$s ਕਨੈਕਟ ਹੈ</string>
     <string name="tun_create_error">tun ਡਿਵਾਈਸ ਬਣਾਉਣ ਲਈ ਅਸਮਰੱਥ</string>
     <string name="tunnel_config_error">ਟਨਲ ਦੀ ਸੰਰਚਨਾ ਕਰਨ ਲਈ ਅਸਮਰੱਥ (wg-quick ਨੇ %d ਵਾਪਸ ਕੀਤਾ)</string>
     <string name="tunnel_create_error">ਟਨਲ ਬਣਾਉਣ ਲਈ ਅਸਮਰੱਥ: %s</string>

@@ -204,6 +204,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">trm: %1$s, krm: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">Status WGX VPN</string>
+    <string name="wgx_vpn_notification_content">Lalu lintas jaringan · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Putuskan</string>
+    <string name="wgx_vpn_notification_title">%1$s terhubung</string>
     <string name="tun_create_error">Tidak dapat membuat perangkat tun</string>
     <string name="tunnel_config_error">Tidak bisa mengkonfigurasikan tunel (wg-quick %d dikembalikan)</string>
     <string name="tunnel_create_error">Tunel %s tidak bisa dibuat</string>

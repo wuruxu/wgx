@@ -217,6 +217,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN-status</string>
+    <string name="wgx_vpn_notification_content">Netværkstrafik · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Afbryd</string>
+    <string name="wgx_vpn_notification_title">%1$s forbundet</string>
     <string name="tun_create_error">Kunne ikke oprette tun enhed</string>
     <string name="tunnel_config_error">Kunne ikke konfigurere tunnel (wg-quick returnerede %d)</string>
     <string name="tunnel_create_error">Ikke i stand til at oprette tunnel: %s</string>

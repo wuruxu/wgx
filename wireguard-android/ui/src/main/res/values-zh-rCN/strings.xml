@@ -204,6 +204,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">接收：%1$s，发送：%2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN 状态</string>
+    <string name="wgx_vpn_notification_content">网络流量 · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">断开连接</string>
+    <string name="wgx_vpn_notification_title">%1$s 已连接</string>
     <string name="tun_create_error">无法创建 tun 设备</string>
     <string name="tunnel_config_error">无法配置隧道（wg-quick returned %d）</string>
     <string name="tunnel_create_error">无法创建隧道：%s</string>

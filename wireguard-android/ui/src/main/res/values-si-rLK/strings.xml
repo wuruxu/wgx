@@ -173,6 +173,11 @@
     <string name="transfer_mibibytes">මෙ.බ. %.2f</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">ටෙ.බ. %.2f</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN තත්ත්වය</string>
+    <string name="wgx_vpn_notification_content">ජාල ගමනාගමනය · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">විසන්ධි කරන්න</string>
+    <string name="wgx_vpn_notification_title">%1$s සම්බන්ධයි</string>
     <string name="tun_create_error">ටුන් උපාංගය සෑදීමට නොහැක</string>
     <string name="tunnel_config_error">උමග වින්‍යාස කිරීමට නොහැක (wg-quick return %d)</string>
     <string name="tunnel_create_error">උමග නිර්මාණය කළ නොහැක: %s</string>

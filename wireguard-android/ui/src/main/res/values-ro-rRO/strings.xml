@@ -228,6 +228,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">Stare WGX VPN</string>
+    <string name="wgx_vpn_notification_content">Trafic de rețea · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Deconectare</string>
+    <string name="wgx_vpn_notification_title">%1$s conectat</string>
     <string name="tun_create_error">Nu se poate crea dispozitiv TUN</string>
     <string name="tunnel_config_error">Tunelul nu poate fi configurat (wg-quick a returnat %d)</string>
     <string name="tunnel_create_error">Tunelul nu poate fi creat: %s</string>

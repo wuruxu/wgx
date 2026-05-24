@@ -243,6 +243,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">Stav WGX VPN</string>
+    <string name="wgx_vpn_notification_content">Síťový provoz · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Odpojit</string>
+    <string name="wgx_vpn_notification_title">%1$s připojeno</string>
     <string name="tun_create_error">Nelze vytvořit tun zařízení</string>
     <string name="tunnel_config_error">Nelze nakonfigurovat tunel (wg-quick vrátil %d)</string>
     <string name="tunnel_create_error">Nelze vytvořit tunel: %s</string>

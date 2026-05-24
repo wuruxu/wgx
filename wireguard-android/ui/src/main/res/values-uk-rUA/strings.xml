@@ -243,6 +243,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">Стан WGX VPN</string>
+    <string name="wgx_vpn_notification_content">Мережевий трафік · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Від’єднати</string>
+    <string name="wgx_vpn_notification_title">%1$s підключено</string>
     <string name="tun_create_error">Не вдалося створити tun інтерфейс</string>
     <string name="tunnel_config_error">Не вдалося налаштувати тунель (wg-quick return %d)</string>
     <string name="tunnel_create_error">Не вдалося створити тунель: %s</string>

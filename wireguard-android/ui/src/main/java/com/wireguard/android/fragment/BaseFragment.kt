@@ -4,7 +4,9 @@
  */
 package com.github.wuruxu.wgx.fragment
 
+import android.Manifest
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -24,6 +26,7 @@ import com.github.wuruxu.wgx.databinding.TunnelDetailFragmentBinding
 import com.github.wuruxu.wgx.databinding.TunnelListItemBinding
 import com.github.wuruxu.wgx.model.ObservableTunnel
 import com.github.wuruxu.wgx.util.ErrorMessages
+import com.github.wuruxu.wgx.util.WgxVpnNotification
 import kotlinx.coroutines.launch
 
 /**
@@ -33,6 +36,7 @@ import kotlinx.coroutines.launch
 abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
     private var pendingTunnel: ObservableTunnel? = null
     private var pendingTunnelUp: Boolean? = null
+    private var pendingNotificationTunnel: ObservableTunnel? = null
     private val permissionActivityResultLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val tunnel = pendingTunnel
         val checked = pendingTunnelUp
@@ -40,6 +44,13 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
             setTunnelStateWithPermissionsResult(tunnel, checked)
         pendingTunnel = null
         pendingTunnelUp = null
+    }
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val tunnel = pendingNotificationTunnel
+        val context = context
+        if (it && tunnel != null && context != null)
+            WgxVpnNotification.start(context, tunnel)
+        pendingNotificationTunnel = null
     }
 
     protected var selectedTunnel: ObservableTunnel?
@@ -91,7 +102,9 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
         val activity = activity ?: return
         activity.lifecycleScope.launch {
             try {
-                tunnel.setStateAsync(Tunnel.State.of(checked))
+                val state = tunnel.setStateAsync(Tunnel.State.of(checked))
+                if (state == Tunnel.State.UP)
+                    showNotificationWithPermission(tunnel)
             } catch (e: Throwable) {
                 val error = ErrorMessages[e]
                 val messageResId = if (checked) R.string.error_up else R.string.error_down
@@ -105,6 +118,18 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
                     Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
                 Log.e(TAG, message, e)
             }
+        }
+    }
+
+    private fun showNotificationWithPermission(tunnel: ObservableTunnel) {
+        val context = context ?: return
+        if (WgxVpnNotification.canPostNotifications(context)) {
+            WgxVpnNotification.start(context, tunnel)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pendingNotificationTunnel = tunnel
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

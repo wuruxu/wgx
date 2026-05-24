@@ -217,6 +217,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">Status da WGX VPN</string>
+    <string name="wgx_vpn_notification_content">Tráfego de rede · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Desconectar</string>
+    <string name="wgx_vpn_notification_title">%1$s conectado</string>
     <string name="tun_create_error">Não foi possível criar o túnel: %s</string>
     <string name="tunnel_config_error">Não foi possível configurar o túnel (wg-quick retornou %d)</string>
     <string name="tunnel_create_error">Não foi possível criar o túnel: %s</string>

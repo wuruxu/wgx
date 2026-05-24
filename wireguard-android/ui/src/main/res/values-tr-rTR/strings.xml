@@ -217,6 +217,11 @@
     <string name="transfer_mibibytes">%.2f MiB</string>
     <string name="transfer_rx_tx">rx: %1$s, tx: %2$s</string>
     <string name="transfer_tibibytes">%.2f TiB</string>
+    <string name="transfer_rx_tx_arrows">↓ %1$s  ↑ %2$s</string>
+    <string name="wgx_vpn_notification_channel">WGX VPN durumu</string>
+    <string name="wgx_vpn_notification_content">Ağ trafiği · %1$s</string>
+    <string name="wgx_vpn_notification_disconnect">Bağlantıyı kes</string>
+    <string name="wgx_vpn_notification_title">%1$s bağlı</string>
     <string name="tun_create_error">Tun aygıtı oluşturulamadı</string>
     <string name="tunnel_config_error">Tünel yapılandırılamadı (wg-quick %d döndürdü)</string>
     <string name="tunnel_create_error">Tünel oluşturulamadı: %s</string>

@@ -23,6 +23,7 @@ import com.github.wuruxu.wgx.configStore.ConfigStore
 import com.github.wuruxu.wgx.databinding.ObservableSortedKeyedArrayList
 import com.github.wuruxu.wgx.util.ErrorMessages
 import com.github.wuruxu.wgx.util.UserKnobs
+import com.github.wuruxu.wgx.util.WgxVpnNotification
 import com.github.wuruxu.wgx.util.applicationScope
 import com.wireguard.config.Config
 import kotlinx.coroutines.CompletableDeferred
@@ -205,6 +206,15 @@ class TunnelManager(private val configStore: ConfigStore) : BaseObservable() {
             throwable = e
         }
         tunnel.onStateChanged(newState)
+        if (newState == Tunnel.State.UP)
+            WgxVpnNotification.start(context, tunnel)
+        else {
+            val runningTunnel = tunnelMap.firstOrNull { it.state == Tunnel.State.UP }
+            if (runningTunnel != null)
+                WgxVpnNotification.start(context, runningTunnel)
+            else
+                WgxVpnNotification.stop(context)
+        }
         saveState()
         if (throwable != null)
             throw throwable
