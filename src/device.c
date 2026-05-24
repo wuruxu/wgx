@@ -409,7 +409,9 @@ int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
 
     /* Copy and pad plaintext */
     uint8_t *plaintext = buf + MSG_TRANSPORT_HDR_SIZE;
-    memcpy(plaintext, pkt, pktlen);
+    if(pktlen > 0) {
+      memcpy(plaintext, pkt, pktlen);
+    }
     /* rest already zero-padded */
 
     /* Encrypt in-place: nonce is little-endian 64-bit padded to 12 bytes */
@@ -701,6 +703,42 @@ static void handle_cookie_reply(wg_device_t *dev,
     cookie_consume_reply(&peer->cookie, msg, now_ms);
 }
 
+//static int transport_plaintext_len(const uint8_t *plaintext, size_t padded_len,
+//                                   size_t *inner_len) {
+//    if (padded_len == 0) {
+//        *inner_len = 0;
+//        return 0;
+//    }
+//
+//    uint8_t version = (plaintext[0] >> 4) & 0xf;
+//    if (version == 4) {
+//        if (padded_len < sizeof(struct iphdr))
+//            return -1;
+//        size_t ihl = (size_t)(plaintext[0] & 0x0f) * 4;
+//        uint16_t total_len;
+//        memcpy(&total_len, plaintext + 2, sizeof(total_len));
+//        total_len = ntohs(total_len);
+//        if (ihl < sizeof(struct iphdr) || total_len < ihl || total_len > padded_len)
+//            return -1;
+//        *inner_len = total_len;
+//        return 0;
+//    }
+//
+//    if (version == 6) {
+//        if (padded_len < sizeof(struct ip6_hdr))
+//            return -1;
+//        uint16_t payload_len;
+//        memcpy(&payload_len, plaintext + 4, sizeof(payload_len));
+//        size_t total_len = sizeof(struct ip6_hdr) + ntohs(payload_len);
+//        if (total_len > padded_len)
+//            return -1;
+//        *inner_len = total_len;
+//        return 0;
+//    }
+//
+//    return -1;
+//}
+
 static void handle_transport(wg_device_t *dev,
                                const struct sockaddr_storage *src,
                                uint8_t *buf, size_t len) {
@@ -743,6 +781,12 @@ static void handle_transport(wg_device_t *dev,
         rx_buffer_release(dev, ptbuf);
         return;
     }
+
+    //if (transport_plaintext_len(plaintext, ptlen, &ptlen) < 0) {
+    //    rx_buffer_release(dev, ptbuf);
+    //    wg_dbg(dev, "Dropped packet from peer: incorrect inner packet size");
+    //    return;
+    //}
 
     atomic_fetch_add(&peer->rx_bytes, len);
     timers_data_received(dev, peer);

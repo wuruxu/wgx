@@ -667,6 +667,9 @@ static void wg_on_close(tcp_conn_t *conn) {
     socks5_conn_t *sc = conn->userdata;
     if (sc) {
         wg_dbg(sc->stack->dev, "s5 conn=%p wg_close", (void *)sc);
+        conn->userdata = NULL;
+        conn->on_recv_window = NULL;
+        conn->on_writeable = NULL;
         sc->wg_conn = NULL;
         socks5_conn_close(sc);
     }
@@ -680,6 +683,8 @@ static void client_close_cb(uv_handle_t *h) {
            (void *)sc->pending_data);
     if (sc->wg_conn) {
         sc->wg_conn->userdata = NULL;
+        sc->wg_conn->on_recv_window = NULL;
+        sc->wg_conn->on_writeable = NULL;
         tcp_close(sc->wg_conn);
         sc->wg_conn = NULL;
     }
@@ -700,6 +705,8 @@ static void socks5_conn_close(socks5_conn_t *sc) {
 
     if (sc->wg_conn) {
         sc->wg_conn->userdata = NULL;
+        sc->wg_conn->on_recv_window = NULL;
+        sc->wg_conn->on_writeable = NULL;
         tcp_close(sc->wg_conn);
         sc->wg_conn = NULL;
     }
