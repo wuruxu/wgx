@@ -138,6 +138,49 @@ static void udp_send_done(uv_udp_send_t *req, int status) {
     udp_send_req_release(dev, sreq);
 }
 
+static wg_rx_buffer_t *rx_buffer_from_data(char *base) {
+    return (wg_rx_buffer_t *)(base - offsetof(wg_rx_buffer_t, data));
+}
+
+static wg_rx_buffer_t *rx_buffer_acquire(wg_device_t *dev) {
+    pthread_mutex_lock(&dev->rx_buffer_pool_lock);
+    wg_rx_buffer_t *buf = dev->rx_buffer_pool;
+    if (buf)
+        dev->rx_buffer_pool = buf->next;
+    pthread_mutex_unlock(&dev->rx_buffer_pool_lock);
+
+    if (buf) {
+        buf->next = NULL;
+        return buf;
+    }
+
+    buf = calloc(1, sizeof(*buf));
+    if (!buf)
+        return NULL;
+    buf->pooled = 0;
+    return buf;
+}
+
+static void rx_buffer_release(wg_device_t *dev, wg_rx_buffer_t *buf) {
+    if (!buf)
+        return;
+    if (!buf->pooled) {
+        free(buf);
+        return;
+    }
+
+    pthread_mutex_lock(&dev->rx_buffer_pool_lock);
+    buf->next = dev->rx_buffer_pool;
+    dev->rx_buffer_pool = buf;
+    pthread_mutex_unlock(&dev->rx_buffer_pool_lock);
+}
+
+static void udp_recv_buffer_release(wg_device_t *dev, const uv_buf_t *buf) {
+    if (!buf || !buf->base)
+        return;
+    rx_buffer_release(dev, rx_buffer_from_data(buf->base));
+}
+
 static int udp_send_copy(wg_device_t *dev, const struct sockaddr *addr,
                          sa_family_t family, const uint8_t *data, size_t len) {
     uv_buf_t uvbuf = uv_buf_init((char *)data, (unsigned int)len);
@@ -684,19 +727,20 @@ static void handle_transport(wg_device_t *dev,
     memcpy(nonce_bytes + 4, &counter_le, 8);
 
     size_t ptlen = datalen - WG_AEAD_TAG_LEN;
-    uint8_t *plaintext = malloc(ptlen ? ptlen : 1);
-    if (!plaintext) return;
+    wg_rx_buffer_t *ptbuf = rx_buffer_acquire(dev);
+    if (!ptbuf) return;
+    uint8_t *plaintext = ptbuf->data;
 
     if (wg_chacha20poly1305_decrypt(plaintext, kp->recv_key, nonce_bytes,
                                      buf + MSG_TRANSPORT_HDR_SIZE, datalen,
                                      NULL, 0) < 0) {
-        free(plaintext);
+        rx_buffer_release(dev, ptbuf);
         wg_dbg(dev, "Decrypt failed");
         return;
     }
 
     if (!replay_commit(&kp->replay, counter, REJECT_AFTER_MESSAGES)) {
-        free(plaintext);
+        rx_buffer_release(dev, ptbuf);
         return;
     }
 
@@ -763,7 +807,7 @@ static void handle_transport(wg_device_t *dev,
         timers_keepalive_received(dev, peer);
     }
 
-    free(plaintext);
+    rx_buffer_release(dev, ptbuf);
 }
 
 
@@ -778,14 +822,14 @@ static void on_udp_recv(uv_udp_t *handle,
 
     if (nread < 0) {
         wg_dbg(dev, "UDP recv error: %s", uv_strerror((int)nread));
-        free(buf->base);
+        udp_recv_buffer_release(dev, buf);
         return;
     }
     if (nread == 0) {
-        free(buf->base);
+        udp_recv_buffer_release(dev, buf);
         return;
     }
-    if (!addr) { free(buf->base); return; }
+    if (!addr) { udp_recv_buffer_release(dev, buf); return; }
 
     struct sockaddr_storage src;
     memset(&src, 0, sizeof(src));
@@ -804,7 +848,7 @@ static void on_udp_recv(uv_udp_t *handle,
 
     if (len < 4) {
         wg_dbg(dev, "UDP recv: short packet (%zu bytes) from %s", len, srcstr);
-        free(buf->base);
+        udp_recv_buffer_release(dev, buf);
         return;
     }
     uint32_t msg_type;
@@ -822,13 +866,15 @@ static void on_udp_recv(uv_udp_t *handle,
         break;
     }
 
-    free(buf->base);
+    udp_recv_buffer_release(dev, buf);
 }
 
 static void on_udp_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
-    (void)handle; (void)suggested_size;
-    buf->base = malloc(WG_MAX_MESSAGE_SIZE + 64);
-    buf->len  = buf->base ? WG_MAX_MESSAGE_SIZE + 64 : 0;
+    (void)suggested_size;
+    wg_device_t *dev = handle->data;
+    wg_rx_buffer_t *rxbuf = rx_buffer_acquire(dev);
+    buf->base = rxbuf ? (char *)rxbuf->data : NULL;
+    buf->len  = rxbuf ? WG_RX_BUFFER_SIZE : 0;
 }
 
 /* ---- TUN poll callback ---- */
@@ -876,6 +922,7 @@ int device_init(wg_device_t *dev, const char *ifname, uv_loop_t *loop) {
     pthread_mutex_init(&dev->cookie_checker.mutex, NULL);
     pthread_mutex_init(&dev->tx_buffer_pool_lock, NULL);
     pthread_mutex_init(&dev->udp_send_req_pool_lock, NULL);
+    pthread_mutex_init(&dev->rx_buffer_pool_lock, NULL);
 
     dev->tx_buffer_nodes = calloc(WG_TX_BUFFER_POOL_SIZE, sizeof(*dev->tx_buffer_nodes));
     if (!dev->tx_buffer_nodes)
@@ -894,6 +941,15 @@ int device_init(wg_device_t *dev, const char *ifname, uv_loop_t *loop) {
         dev->udp_send_req_nodes[i].pooled = 1;
         dev->udp_send_req_nodes[i].next = dev->udp_send_req_pool;
         dev->udp_send_req_pool = &dev->udp_send_req_nodes[i];
+    }
+
+    dev->rx_buffer_nodes = calloc(WG_RX_BUFFER_POOL_SIZE, sizeof(*dev->rx_buffer_nodes));
+    if (!dev->rx_buffer_nodes)
+        return -1;
+    for (size_t i = 0; i < WG_RX_BUFFER_POOL_SIZE; i++) {
+        dev->rx_buffer_nodes[i].pooled = 1;
+        dev->rx_buffer_nodes[i].next = dev->rx_buffer_pool;
+        dev->rx_buffer_pool = &dev->rx_buffer_nodes[i];
     }
 
     index_table_init(&dev->index_table);
@@ -1031,9 +1087,11 @@ void device_free(wg_device_t *dev) {
     device_remove_all_peers(dev);
     allowedips_free(&dev->allowedips);
     index_table_free(&dev->index_table);
+    free(dev->rx_buffer_nodes);
     free(dev->udp_send_req_nodes);
     free(dev->tx_buffer_nodes);
     pthread_mutex_destroy(&dev->cookie_checker.mutex);
+    pthread_mutex_destroy(&dev->rx_buffer_pool_lock);
     pthread_mutex_destroy(&dev->udp_send_req_pool_lock);
     pthread_mutex_destroy(&dev->tx_buffer_pool_lock);
     pthread_rwlock_destroy(&dev->identity_lock);

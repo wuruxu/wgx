@@ -79,6 +79,8 @@ struct tcp_worker;
 #define WG_TX_BUFFER_POOL_SIZE  512
 #define WG_TX_BUFFER_SIZE       (MSG_TRANSPORT_HDR_SIZE + WG_DEFAULT_MTU + WG_AEAD_TAG_LEN)
 #define WG_UDP_SEND_REQ_POOL_SIZE 512
+#define WG_RX_BUFFER_POOL_SIZE  512
+#define WG_RX_BUFFER_SIZE       (WG_MAX_MESSAGE_SIZE + 64)
 
 typedef struct wg_tx_buffer {
     struct wg_tx_buffer *next;
@@ -93,6 +95,12 @@ typedef struct wg_udp_send_req {
     int                     pooled;
     uint8_t                 data[WG_TX_BUFFER_SIZE];
 } wg_udp_send_req_t;
+
+typedef struct wg_rx_buffer {
+    struct wg_rx_buffer *next;
+    int                  pooled;
+    uint8_t              data[WG_RX_BUFFER_SIZE];
+} wg_rx_buffer_t;
 
 /* ---- Keypair ---- */
 typedef struct wg_keypair {
@@ -293,6 +301,11 @@ typedef struct wg_device {
     pthread_mutex_t     udp_send_req_pool_lock;
     wg_udp_send_req_t   *udp_send_req_pool;
     wg_udp_send_req_t   *udp_send_req_nodes;
+
+    /* UDP receive/decrypt buffer pool */
+    pthread_mutex_t     rx_buffer_pool_lock;
+    wg_rx_buffer_t      *rx_buffer_pool;
+    wg_rx_buffer_t      *rx_buffer_nodes;
 } wg_device_t;
 
 /* Log levels */
