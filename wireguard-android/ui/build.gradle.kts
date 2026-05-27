@@ -1,6 +1,28 @@
 @file:Suppress("UnstableApiUsage")
 
+import java.util.Properties
+
 val pkg: String = providers.gradleProperty("wireguardPackageName").get()
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.isFile) {
+        localPropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningProperty(name: String): String? =
+    localProperties.getProperty(name) ?: providers.gradleProperty(name).orNull ?: System.getenv(name)
+
+val releaseStoreFile = releaseSigningProperty("WGX_RELEASE_STORE_FILE")
+val releaseKeyAlias = releaseSigningProperty("WGX_RELEASE_KEY_ALIAS")
+val releaseStorePassword = releaseSigningProperty("WGX_RELEASE_STORE_PASSWORD")
+val releaseKeyPassword = releaseSigningProperty("WGX_RELEASE_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseStoreFile,
+    releaseKeyAlias,
+    releaseStorePassword,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
 
 plugins {
     alias(libs.plugins.android.application)
@@ -27,8 +49,21 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                keyAlias = releaseKeyAlias
+                storePassword = releaseStorePassword
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles("proguard-android-optimize.txt")
@@ -47,6 +82,17 @@ android {
         create("googleplay") {
             initWith(getByName("release"))
             matchingFallbacks += "release"
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+    packaging {
+        jniLibs {
+            excludes += listOf(
+                "**/x86/libdatastore_shared_counter.so",
+                "**/x86_64/libdatastore_shared_counter.so",
+            )
         }
     }
     androidResources {
