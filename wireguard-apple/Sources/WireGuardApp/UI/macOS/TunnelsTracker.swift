@@ -33,6 +33,16 @@ class TunnelsTracker {
         }
     }
 
+    var shouldKeepDockIconVisible: Bool {
+        guard let currentTunnel = currentTunnel else { return false }
+        switch currentTunnel.status {
+        case .active, .activating, .waiting, .reasserting, .restarting:
+            return true
+        case .inactive, .deactivating:
+            return false
+        }
+    }
+
     init(tunnelsManager: TunnelsManager) {
         self.tunnelsManager = tunnelsManager
         currentTunnel = tunnelsManager.tunnelInOperation()
@@ -59,6 +69,10 @@ class TunnelsTracker {
                 self.currentTunnel = tunnel
             }
         }
+    }
+
+    func refreshDockIconBadge() {
+        dockIconBadgeController.refresh()
     }
 }
 
@@ -89,6 +103,10 @@ private final class DockIconBadgeController {
         case .inactive, .deactivating:
             return .hidden
         }
+    }
+
+    func refresh() {
+        updateDockIconBadge()
     }
 
     private func updateDockIconBadge() {

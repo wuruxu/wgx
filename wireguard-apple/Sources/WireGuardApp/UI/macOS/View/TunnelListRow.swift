@@ -48,7 +48,7 @@ class TunnelListRow: NSView {
         nameLabel.backgroundColor = .clear
         NSLayoutConstraint.activate([
             self.leadingAnchor.constraint(equalTo: statusImageView.leadingAnchor),
-            statusImageView.trailingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            nameLabel.leadingAnchor.constraint(equalTo: statusImageView.trailingAnchor, constant: 6),
             statusImageView.widthAnchor.constraint(equalToConstant: 20),
             nameLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             statusImageView.centerYAnchor.constraint(equalTo: self.centerYAnchor),

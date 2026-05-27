@@ -148,9 +148,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ application: NSApplication) -> Bool {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(200)) { [weak self] in
-            self?.setDockIconAndMainMenuVisibility(isVisible: false)
+            guard let self = self else { return }
+            if self.tunnelsTracker?.shouldKeepDockIconVisible == true {
+                self.tunnelsTracker?.refreshDockIconBadge()
+            } else {
+                self.setDockIconAndMainMenuVisibility(isVisible: false)
+            }
         }
         return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            showManageTunnelsWindow(completion: nil)
+            tunnelsTracker?.refreshDockIconBadge()
+        }
+        return true
     }
 
     private func setDockIconAndMainMenuVisibility(isVisible: Bool, completion: (() -> Void)? = nil) {
