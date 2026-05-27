@@ -21,6 +21,10 @@ No TUN device is required for SOCKS5 mode, and the process does not need root
 privileges for normal proxy usage. TUN mode is available when you want a
 drop-in userspace WireGuard interface with the familiar `wg` UAPI control path.
 
+## Use Restriction
+
+This project must not be used for commercial purposes or for any illegal activities.
+
 ## Features
 
 - WireGuard client implemented in userspace.
