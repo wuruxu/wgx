@@ -23,17 +23,20 @@ class TunnelsTracker {
     weak var manageTunnelsRootVC: ManageTunnelsRootViewController?
 
     private var tunnelsManager: TunnelsManager
+    private let dockIconBadgeController = DockIconBadgeController()
     private var tunnelStatusObservers = [AnyObject]()
     private(set) var currentTunnel: TunnelContainer? {
         didSet {
             statusMenu?.currentTunnel = currentTunnel
             statusItemController?.currentTunnel = currentTunnel
+            dockIconBadgeController.currentTunnel = currentTunnel
         }
     }
 
     init(tunnelsManager: TunnelsManager) {
         self.tunnelsManager = tunnelsManager
         currentTunnel = tunnelsManager.tunnelInOperation()
+        dockIconBadgeController.currentTunnel = currentTunnel
 
         for index in 0 ..< tunnelsManager.numberOfTunnels() {
             let tunnel = tunnelsManager.tunnel(at: index)
@@ -56,6 +59,137 @@ class TunnelsTracker {
                 self.currentTunnel = tunnel
             }
         }
+    }
+}
+
+private final class DockIconBadgeController {
+    var currentTunnel: TunnelContainer? {
+        didSet {
+            updateDockIconBadge()
+        }
+    }
+
+    private let baseApplicationIcon = NSApp.applicationIconImage.copy() as? NSImage
+    private var animationTimer: Timer?
+    private var animationProgress: CGFloat = 0
+
+    private enum BadgeState {
+        case hidden
+        case connecting
+        case connected
+    }
+
+    private var badgeState: BadgeState {
+        guard let currentTunnel = currentTunnel else { return .hidden }
+        switch currentTunnel.status {
+        case .active:
+            return .connected
+        case .activating, .waiting, .reasserting, .restarting:
+            return .connecting
+        case .inactive, .deactivating:
+            return .hidden
+        }
+    }
+
+    private func updateDockIconBadge() {
+        switch badgeState {
+        case .hidden:
+            stopConnectingAnimation()
+            restoreBaseApplicationIcon()
+        case .connected:
+            stopConnectingAnimation()
+            setDockIconBorder(color: .systemGreen)
+        case .connecting:
+            startConnectingAnimation()
+        }
+    }
+
+    private func startConnectingAnimation() {
+        guard animationTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.updateConnectingAnimationFrame()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+        updateConnectingAnimationFrame()
+    }
+
+    private func stopConnectingAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        animationProgress = 0
+    }
+
+    private func updateConnectingAnimationFrame() {
+        animationProgress += 0.05
+        let breath = CGFloat((sin(Double(animationProgress * .pi)) + 1) / 2)
+        let color = NSColor.interpolate(from: .systemYellow, to: .systemGreen, progress: breath)
+        setDockIconBorder(color: color)
+    }
+
+    private func restoreBaseApplicationIcon() {
+        if let baseApplicationIcon = baseApplicationIcon {
+            NSApp.applicationIconImage = baseApplicationIcon
+        }
+    }
+
+    private func setDockIconBorder(color: NSColor) {
+        guard let baseApplicationIcon = baseApplicationIcon else { return }
+
+        let iconSize = baseApplicationIcon.size
+        let lineWidth: CGFloat = 3.6
+        let borderInset = lineWidth * 1.2
+        let borderRect = NSRect(origin: .zero, size: iconSize).insetBy(dx: borderInset, dy: borderInset)
+        let cornerRadius = min(iconSize.width, iconSize.height) * 0.28
+
+        let image = NSImage(size: iconSize)
+        image.lockFocus()
+        baseApplicationIcon.draw(in: NSRect(origin: .zero, size: iconSize))
+
+        let shadowPath = NSBezierPath(
+            roundedRect: borderRect.insetBy(dx: -lineWidth * 0.5, dy: -lineWidth * 0.5),
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        )
+        shadowPath.lineWidth = lineWidth + 1
+        NSColor.black.withAlphaComponent(0.25).setStroke()
+        shadowPath.stroke()
+
+        let highlightPath = NSBezierPath(
+            roundedRect: borderRect.insetBy(dx: lineWidth * 0.25, dy: lineWidth * 0.25),
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        )
+        highlightPath.lineWidth = lineWidth + 0.4
+        NSColor.white.withAlphaComponent(0.85).setStroke()
+        highlightPath.stroke()
+
+        let borderPath = NSBezierPath(
+            roundedRect: borderRect.insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5),
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        )
+        borderPath.lineWidth = lineWidth
+        color.setStroke()
+        borderPath.stroke()
+        image.unlockFocus()
+
+        NSApp.applicationIconImage = image
+    }
+}
+
+private extension NSColor {
+    static func interpolate(from startColor: NSColor, to endColor: NSColor, progress: CGFloat) -> NSColor {
+        guard let startColor = startColor.usingColorSpace(.deviceRGB),
+              let endColor = endColor.usingColorSpace(.deviceRGB) else {
+            return progress < 0.5 ? startColor : endColor
+        }
+        return NSColor(
+            red: startColor.redComponent + (endColor.redComponent - startColor.redComponent) * progress,
+            green: startColor.greenComponent + (endColor.greenComponent - startColor.greenComponent) * progress,
+            blue: startColor.blueComponent + (endColor.blueComponent - startColor.blueComponent) * progress,
+            alpha: startColor.alphaComponent + (endColor.alphaComponent - startColor.alphaComponent) * progress
+        )
     }
 }
 
