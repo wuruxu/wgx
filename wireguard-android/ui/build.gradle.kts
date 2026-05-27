@@ -87,6 +87,14 @@ android {
             }
         }
     }
+    packaging {
+        jniLibs {
+            excludes += listOf(
+                "**/x86/libdatastore_shared_counter.so",
+                "**/x86_64/libdatastore_shared_counter.so",
+            )
+        }
+    }
     androidResources {
         generateLocaleConfig = true
     }
