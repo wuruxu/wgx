@@ -6,6 +6,9 @@
  *
  * SOCKS5 proxy mode (no TUN, no kernel interface):
  *   wgx --socks5 ADDR:PORT --config wg.conf
+ *
+ * Server mode (no TUN, no kernel interface):
+ *   wgx --server PORT --forward 127.0.0.1:22 --config wg.conf
  */
 #include "wg.h"
 #include "device.h"
@@ -13,6 +16,7 @@
 #include "tcpstack.h"
 #include "tcp_worker.h"
 #include "socks5.h"
+#include "forward.h"
 #include "conf.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +43,7 @@ static void print_usage(const char *prog) {
             "Usage:\n"
             "  %s [-f|--foreground] INTERFACE-NAME\n"
             "  %s --socks5 [USER:PASS@]ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n"
-            "  %s --server PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
+            "  %s --server PORT --forward ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
             prog, prog, prog);
 }
 
@@ -125,6 +129,7 @@ static int parse_socks5_arg(const char *s,
     return parse_addr_port(addr_part, addr_out, addr_sz, port_out);
 }
 
+#if 0
 static void echo_conn_desc(tcp_conn_t *conn, char *buf, size_t len) {
     char local[INET6_ADDRSTRLEN] = "?";
     char remote[INET6_ADDRSTRLEN] = "?";
@@ -170,6 +175,9 @@ static void server_on_accept(tcp_conn_t *conn, void *userdata) {
     echo_conn_desc(conn, desc, sizeof(desc));
     fprintf(stderr, "echo: new connection %s\n", desc);
 }
+#endif
+
+static forward_target_t g_forward;
 
 static void sockaddr_desc(const struct sockaddr_storage *addr, char *buf, size_t len) {
     char ip[INET6_ADDRSTRLEN] = "?";
@@ -236,6 +244,7 @@ int main(int argc, char *argv[]) {
     char        socks5_pass[256] = "";
     uint16_t    socks5_port  = 0;
     uint16_t    server_port    = 0;
+    int         forward_set    = 0;
     char        wg_addr_str[64] = "";
     char        wg_addr6_str[80] = "";
     char        dns_servers[512] = "";
@@ -267,6 +276,16 @@ int main(int argc, char *argv[]) {
             server_port = (uint16_t)p;
             server_mode = 1;
 
+        } else if (strcmp(argv[i], "--forward") == 0) {
+            if (++i >= argc) { print_usage(argv[0]); return 1; }
+            if (parse_addr_port(argv[i], g_forward.host,
+                                sizeof(g_forward.host),
+                                &g_forward.port) < 0) {
+                fprintf(stderr, "Invalid --forward address: %s\n", argv[i]);
+                return 1;
+            }
+            forward_set = 1;
+
         } else if (strcmp(argv[i], "--wg-addr") == 0) {
             if (++i >= argc) { print_usage(argv[0]); return 1; }
             strncpy(wg_addr_str, argv[i], sizeof(wg_addr_str) - 1);
@@ -293,6 +312,14 @@ int main(int argc, char *argv[]) {
     /* Validate arguments */
     if (socks5_mode && server_mode) {
         fprintf(stderr, "--socks5 and --server cannot be used together\n");
+        return 1;
+    }
+    if (forward_set && !server_mode) {
+        fprintf(stderr, "--forward requires --server\n");
+        return 1;
+    }
+    if (server_mode && !forward_set) {
+        fprintf(stderr, "--server requires --forward ADDR:PORT\n");
         return 1;
     }
     int userspace_mode = socks5_mode || server_mode;
@@ -462,7 +489,7 @@ int main(int argc, char *argv[]) {
                       g_device.wg_local_ip6_set ? &g_device.wg_local_ip6 : NULL,
                       &g_loop);
         if (tcpstack_listen(g_device.tcpstack, AF_INET, server_port,
-                            server_on_accept, NULL) < 0) {
+                            forward_on_accept, &g_forward) < 0) {
             fprintf(stderr, "Failed to start server on VPN port %u\n",
                     server_port);
             device_stop(&g_device);
@@ -470,7 +497,7 @@ int main(int argc, char *argv[]) {
         }
         if (g_device.wg_local_ip6_set &&
             tcpstack_listen(g_device.tcpstack, AF_INET6, server_port,
-                            server_on_accept, NULL) < 0) {
+                            forward_on_accept, &g_forward) < 0) {
             fprintf(stderr, "Failed to start IPv6 server on VPN port %u\n",
                     server_port);
             device_stop(&g_device);
@@ -478,8 +505,9 @@ int main(int argc, char *argv[]) {
         }
 
         fprintf(stderr,
-                "wgx server: VPN-IP=%s port=%u%s%s  config=%s\n",
+                "wgx server: VPN-IP=%s port=%u forward=%s:%u%s%s  config=%s\n",
                 wg_addr_str, server_port,
+                g_forward.host, g_forward.port,
                 wg_addr6_str[0] ? "  VPN-IPv6=" : "",
                 wg_addr6_str[0] ? wg_addr6_str : "",
                 config_path);
