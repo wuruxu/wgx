@@ -22,6 +22,14 @@ typedef struct tcp_ooo_seg {
     uint8_t data[];
 } tcp_ooo_seg_t;
 
+typedef struct tcp_listener {
+    struct tcp_listener *next;
+    int family;
+    uint16_t local_port;
+    tcp_accept_cb on_accept;
+    void *userdata;
+} tcp_listener_t;
+
 static uint32_t hash_addr32(const uint8_t *buf, size_t len) {
     uint32_t h = 0;
     for (size_t i = 0; i < len; i++)
@@ -228,6 +236,34 @@ static void tcp_flush_pending(tcp_conn_t *conn);
 static void retransmit_cb(uv_timer_t *timer);
 static void delayed_ack_cb(uv_timer_t *timer);
 
+static void parse_syn_options(tcp_conn_t *conn, const uint8_t *tcp,
+                              uint8_t data_off) {
+    conn->snd_mss = WG_TCP_MSS;
+    conn->snd_wscale = 0;
+    if (data_off <= 20)
+        return;
+
+    const uint8_t *opt = tcp + 20;
+    const uint8_t *end = tcp + data_off;
+    while (opt < end) {
+        if (*opt == 0) break;
+        if (*opt == 1) { opt++; continue; }
+        if (opt + 1 >= end) break;
+        uint8_t optlen = opt[1];
+        if (optlen < 2 || opt + optlen > end) break;
+        if (*opt == 2 && optlen == 4) {
+            uint16_t rmss;
+            memcpy(&rmss, opt + 2, 2);
+            rmss = ntohs(rmss);
+            if (rmss > 0 && rmss < WG_TCP_MSS)
+                conn->snd_mss = rmss;
+        } else if (*opt == 3 && optlen == 3) {
+            conn->snd_wscale = opt[2] > 14 ? 14 : opt[2];
+        }
+        opt += optlen;
+    }
+}
+
 static void flush_check_cb(uv_check_t *handle) {
     tcpstack_t *stack = handle->data;
     tcp_conn_t *conn = stack->flush_head;
@@ -426,6 +462,15 @@ static tcp_conn_t *bucket_lookup(tcpstack_t *stack,
     return NULL;
 }
 
+static tcp_listener_t *listener_lookup(tcpstack_t *stack, int family,
+                                       uint16_t local_port) {
+    for (tcp_listener_t *l = (tcp_listener_t *)stack->listeners; l; l = l->next) {
+        if (l->family == family && l->local_port == local_port)
+            return l;
+    }
+    return NULL;
+}
+
 static int sendbuf_grow(tcp_conn_t *conn, uint32_t need) {
     if (need <= conn->sendbuf_cap)
         return 0;
@@ -581,8 +626,9 @@ static void retransmit_cb(uv_timer_t *timer) {
     }
 
     if (conn->state == TCPS_SYN_SENT) {
-        /* Retransmit SYN */
         send_segment(conn, TCPF_SYN, conn->iss, 0, NULL, 0);
+    } else if (conn->state == TCPS_SYN_RECEIVED) {
+        send_segment(conn, TCPF_SYN | TCPF_ACK, conn->iss, conn->rcv_nxt, NULL, 0);
     } else if (conn->state == TCPS_ESTABLISHED ||
                conn->state == TCPS_CLOSE_WAIT  ||
                conn->state == TCPS_FIN_WAIT    ||
@@ -713,6 +759,36 @@ void tcpstack_free(tcpstack_t *stack) {
         c = next;
     }
     stack->conns = NULL;
+    tcp_listener_t *l = (tcp_listener_t *)stack->listeners;
+    while (l) {
+        tcp_listener_t *next = l->next;
+        free(l);
+        l = next;
+    }
+    stack->listeners = NULL;
+}
+
+int tcpstack_listen(tcpstack_t *stack, int family, uint16_t local_port,
+                    tcp_accept_cb on_accept, void *userdata) {
+    if (!stack || !on_accept || local_port == 0)
+        return -1;
+    if (family != AF_INET && family != AF_INET6)
+        return -1;
+    if (family == AF_INET6 && !stack->local_ip6_set)
+        return -1;
+    if (listener_lookup(stack, family, local_port))
+        return -1;
+
+    tcp_listener_t *l = calloc(1, sizeof(*l));
+    if (!l)
+        return -1;
+    l->family = family;
+    l->local_port = local_port;
+    l->on_accept = on_accept;
+    l->userdata = userdata;
+    l->next = (tcp_listener_t *)stack->listeners;
+    stack->listeners = (struct tcp_listener *)l;
+    return 0;
 }
 
 tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
@@ -917,7 +993,55 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
     tcp_conn_t *conn = (family == AF_INET6) ?
         bucket_lookup(stack, family, &dst_ip6, &src_ip6, dst_port, src_port) :
         bucket_lookup(stack, family, &dst_ip, &src_ip, dst_port, src_port);
-    if (!conn) return;
+    if (!conn) {
+        tcp_listener_t *listener = listener_lookup(stack, family, dst_port);
+        if (!listener || (flags & TCPF_SYN) == 0 || (flags & TCPF_ACK))
+            return;
+
+        conn = calloc(1, sizeof(*conn));
+        if (!conn)
+            return;
+        conn->stack = stack;
+        conn->family = family;
+        if (family == AF_INET6) {
+            conn->local_ip6 = dst_ip6;
+            conn->remote_ip6 = src_ip6;
+        } else {
+            conn->local_ip = dst_ip;
+            conn->remote_ip = src_ip;
+        }
+        conn->local_port = dst_port;
+        conn->remote_port = src_port;
+        conn->iss = generate_isn();
+        conn->snd_una = conn->iss;
+        conn->snd_nxt = conn->iss + 1;
+        conn->rcv_nxt = seq + 1;
+        conn->snd_wnd = remote_window;
+        conn->snd_mss = WG_TCP_MSS;
+        conn->sendbuf_cap = WG_TCP_SENDBUF_INITIAL_SIZE;
+        conn->sendbuf = malloc(conn->sendbuf_cap);
+        if (!conn->sendbuf) {
+            free(conn);
+            return;
+        }
+        parse_syn_options(conn, tcp, data_off);
+        conn->snd_wnd = (uint32_t)remote_window << conn->snd_wscale;
+        uv_timer_init(stack->loop, &conn->retransmit_timer);
+        conn->retransmit_timer.data = conn;
+        conn->timer_initialized = 1;
+        uv_timer_init(stack->loop, &conn->ack_timer);
+        conn->ack_timer.data = conn;
+        conn->ack_timer_initialized = 1;
+        conn->next = stack->conns;
+        stack->conns = conn;
+        bucket_insert(stack, conn);
+        conn->state = TCPS_SYN_RECEIVED;
+        send_segment(conn, TCPF_SYN | TCPF_ACK, conn->iss, conn->rcv_nxt, NULL, 0);
+        uv_timer_start(&conn->retransmit_timer, retransmit_cb,
+                       WG_TCP_RETRANSMIT_MS, 0);
+        listener->on_accept(conn, listener->userdata);
+        return;
+    }
 
     /* RST: hard close */
     if (flags & TCPF_RST) {
@@ -933,6 +1057,21 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
     /* --- State machine --- */
     switch (conn->state) {
 
+    case TCPS_SYN_RECEIVED:
+        if ((flags & TCPF_ACK) && ack == conn->snd_nxt) {
+            conn->snd_una = ack;
+            conn->state = TCPS_ESTABLISHED;
+            uv_timer_stop(&conn->retransmit_timer);
+            conn->retransmit_count = 0;
+            if (payload_len > 0 && seq == conn->rcv_nxt) {
+                conn->rcv_nxt += (uint32_t)payload_len;
+                if (conn->on_data) conn->on_data(conn, payload, payload_len);
+                uint32_t drained = tcp_ooo_drain(conn);
+                tcp_ack_data(conn, payload_len + drained, drained > 0);
+            }
+        }
+        break;
+
     case TCPS_SYN_SENT:
         if ((flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK)) {
             /* Validate ACK */
@@ -945,28 +1084,7 @@ void tcpstack_input(tcpstack_t *stack, const uint8_t *ip_pkt, size_t len) {
             uv_timer_stop(&conn->retransmit_timer);
             conn->retransmit_count = 0;
 
-            /* Parse remote MSS and window scale options if present. */
-            if (data_off > 20) {
-                const uint8_t *opt = tcp + 20;
-                const uint8_t *end = tcp + data_off;
-                while (opt < end) {
-                    if (*opt == 0) break;
-                    if (*opt == 1) { opt++; continue; }
-                    if (opt + 1 >= end) break;
-                    uint8_t optlen = opt[1];
-                    if (optlen < 2 || opt + optlen > end) break;
-                    if (*opt == 2 && optlen == 4) {
-                        uint16_t rmss;
-                        memcpy(&rmss, opt + 2, 2);
-                        rmss = ntohs(rmss);
-                        if (rmss > 0 && rmss < WG_TCP_MSS)
-                            conn->snd_mss = rmss;
-                    } else if (*opt == 3 && optlen == 3) {
-                        conn->snd_wscale = opt[2] > 14 ? 14 : opt[2];
-                    }
-                    opt += optlen;
-                }
-            }
+            parse_syn_options(conn, tcp, data_off);
             conn->snd_wnd = (uint32_t)remote_window << conn->snd_wscale;
 
             /* Send ACK */
