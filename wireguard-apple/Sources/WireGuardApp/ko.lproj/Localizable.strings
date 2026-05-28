@@ -91,6 +91,7 @@
 "macToggleStatusButtonActivating" = "Activating…";
 "macMenuQuit" = "Quit wgx";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "QR 코드에서 터널 가져오기…";
 "tunnelStatusDeactivating" = "Deactivating";
 "alertInvalidInterfaceTitle" = "Invalid interface";
 "macDeleteTunnelConfirmationAlertButtonTitleDelete" = "Delete";

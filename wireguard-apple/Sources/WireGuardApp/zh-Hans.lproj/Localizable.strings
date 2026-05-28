@@ -201,6 +201,10 @@
 
 "alertScanQRCodeUnreadableQRCodeTitle" = "代码无效";
 "alertScanQRCodeUnreadableQRCodeMessage" = "扫描的二维码无法读取";
+"alertScanQRCodeScreenCaptureCancelledTitle" = "已取消导入二维码";
+"alertScanQRCodeScreenCaptureCancelledMessage" = "没有选择屏幕区域。";
+"alertScanQRCodeScreenCaptureFailedTitle" = "无法截取屏幕";
+"alertScanQRCodeScreenCaptureFailedMessage" = "请重新选择二维码区域。macOS 也可能要求为此 App 授予屏幕录制权限。";
 
 "alertScanQRCodeNamePromptTitle" = "请命名扫描的隧道";
 
@@ -304,6 +308,7 @@
 "macMenuManageTunnels" = "管理隧道";
 "macMenuImportTunnels" = "从文件导入隧道…";
 "macMenuAddEmptyTunnel" = "添加空隧道…";
+"macMenuImportTunnelFromQRCode" = "从二维码导入隧道…";
 "macMenuViewLog" = "查看日志";
 "macMenuExportTunnels" = "导出隧道为Zip…";
 "macMenuAbout" = "关于 wgx";

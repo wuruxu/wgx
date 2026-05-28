@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "トンネルの管理";
 "macMenuImportTunnels" = "ファイルからトンネルをインポート…";
 "macMenuAddEmptyTunnel" = "設定が空のトンネルを追加…";
+"macMenuImportTunnelFromQRCode" = "QRコードからトンネルをインポート…";
 "macMenuViewLog" = "ログの参照";
 "macMenuExportTunnels" = "トンネル設定をZIPにエクスポート…";
 "macMenuAbout" = "wgx について";

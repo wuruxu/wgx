@@ -242,6 +242,7 @@
 "macMenuManageTunnels" = "مدیریت تونل‌ها";
 "macMenuImportTunnels" = "وارد کردن تونل(ها) از پرونده…";
 "macMenuAddEmptyTunnel" = "افزودن تونل خالی…";
+"macMenuImportTunnelFromQRCode" = "وارد کردن تونل از کد QR…";
 "macMenuViewLog" = "مشاهده گزارش رویداد";
 "macMenuExportTunnels" = "برون‌بری تونل‌ها در پرونده زیپ…";
 "macMenuAbout" = "درباره wgx";

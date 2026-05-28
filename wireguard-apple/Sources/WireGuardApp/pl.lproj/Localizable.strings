@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "Zarządzaj tunelami";
 "macMenuImportTunnels" = "Importuj tunel(e) z pliku…";
 "macMenuAddEmptyTunnel" = "Dodaj pusty tunel…";
+"macMenuImportTunnelFromQRCode" = "Importuj tunel z kodu QR…";
 "macMenuViewLog" = "Wyświetl log";
 "macMenuExportTunnels" = "Wyeksportuj tunele do pliku ZIP…";
 "macMenuAbout" = "Informacje o wgx";

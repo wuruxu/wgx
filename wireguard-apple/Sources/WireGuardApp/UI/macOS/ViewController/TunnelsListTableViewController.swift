@@ -30,6 +30,7 @@ class TunnelsListTableViewController: NSViewController {
         let menu = NSMenu()
         menu.addItem(imageItem)
         menu.addItem(withTitle: tr("macMenuAddEmptyTunnel"), action: #selector(handleAddEmptyTunnelAction), keyEquivalent: "n")
+        menu.addItem(withTitle: tr("macMenuImportTunnelFromQRCode"), action: #selector(handleImportTunnelFromQRCodeAction), keyEquivalent: "")
         menu.addItem(withTitle: tr("macMenuImportTunnels"), action: #selector(handleImportTunnelAction), keyEquivalent: "o")
         menu.autoenablesItems = false
 
@@ -155,6 +156,10 @@ class TunnelsListTableViewController: NSViewController {
 
     @objc func handleImportTunnelAction() {
         ImportPanelPresenter.presentImportPanel(tunnelsManager: tunnelsManager, sourceVC: self)
+    }
+
+    @objc func handleImportTunnelFromQRCodeAction() {
+        QRCodeImportPanelPresenter.presentQRCodeImportPanel(tunnelsManager: tunnelsManager, sourceVC: self)
     }
 
     @objc func handleRemoveTunnelAction() {

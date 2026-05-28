@@ -144,6 +144,7 @@
 "macToggleStatusButtonActivating" = "Activating…";
 "macMenuQuit" = "Quit wgx";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "Importa el túnel des d'un codi QR…";
 "tunnelStatusDeactivating" = "Deactivating";
 "alertInvalidInterfaceTitle" = "Invalid interface";
 "tunnelSectionTitleStatus" = "Status";
