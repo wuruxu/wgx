@@ -21,6 +21,7 @@ SRCS := \
 	$(SRCDIR)/tcpstack.c    \
 	$(SRCDIR)/tcp_worker.c  \
 	$(SRCDIR)/socks5.c      \
+	$(SRCDIR)/forward.c     \
 	$(SRCDIR)/conf.c
 
 OBJS := $(SRCS:$(SRCDIR)/%.c=$(OBJDIR)/%.o)

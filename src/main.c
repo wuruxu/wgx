@@ -6,6 +6,9 @@
  *
  * SOCKS5 proxy mode (no TUN, no kernel interface):
  *   wgx --socks5 ADDR:PORT --config wg.conf
+ *
+ * Server mode (no TUN, no kernel interface):
+ *   wgx --server PORT --forward 127.0.0.1:22 --config wg.conf
  */
 #include "wg.h"
 #include "device.h"
@@ -13,6 +16,7 @@
 #include "tcpstack.h"
 #include "tcp_worker.h"
 #include "socks5.h"
+#include "forward.h"
 #include "conf.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,8 +42,9 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [-f|--foreground] INTERFACE-NAME\n"
-            "  %s --socks5 [USER:PASS@]ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
-            prog, prog);
+            "  %s --socks5 [USER:PASS@]ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n"
+            "  %s --server PORT --forward ADDR:PORT [--wg-addr VPN-IP] [--wg-addr6 VPN-IPV6] --config WG-CONF\n",
+            prog, prog, prog);
 }
 
 static void noop_close_cb(uv_handle_t *h) { (void)h; }
@@ -124,6 +129,105 @@ static int parse_socks5_arg(const char *s,
     return parse_addr_port(addr_part, addr_out, addr_sz, port_out);
 }
 
+#if 0
+static void echo_conn_desc(tcp_conn_t *conn, char *buf, size_t len) {
+    char local[INET6_ADDRSTRLEN] = "?";
+    char remote[INET6_ADDRSTRLEN] = "?";
+
+    if (conn->family == AF_INET6) {
+        inet_ntop(AF_INET6, &conn->local_ip6, local, sizeof(local));
+        inet_ntop(AF_INET6, &conn->remote_ip6, remote, sizeof(remote));
+        snprintf(buf, len, "[%s]:%u <- [%s]:%u",
+                 local, conn->local_port, remote, conn->remote_port);
+    } else {
+        inet_ntop(AF_INET, &conn->local_ip, local, sizeof(local));
+        inet_ntop(AF_INET, &conn->remote_ip, remote, sizeof(remote));
+        snprintf(buf, len, "%s:%u <- %s:%u",
+                 local, conn->local_port, remote, conn->remote_port);
+    }
+}
+
+static void echo_on_close(tcp_conn_t *conn) {
+    char desc[128];
+    echo_conn_desc(conn, desc, sizeof(desc));
+    fprintf(stderr, "echo: connection closed %s\n", desc);
+}
+
+static void echo_on_data(tcp_conn_t *conn, const uint8_t *data, size_t len) {
+    char desc[128];
+    echo_conn_desc(conn, desc, sizeof(desc));
+    fprintf(stderr, "echo: received %zu bytes %s\n", len, desc);
+    if(tcp_send(conn, (const uint8_t *)"reply:", 6) < 0) {
+        tcp_close(conn);
+    }
+    if (tcp_send(conn, data, len) < 0) {
+        fprintf(stderr, "echo: send failed %s\n", desc);
+        tcp_close(conn);
+    }
+}
+
+static void server_on_accept(tcp_conn_t *conn, void *userdata) {
+    (void)userdata;
+    conn->on_data = echo_on_data;
+    conn->on_close = echo_on_close;
+
+    char desc[128];
+    echo_conn_desc(conn, desc, sizeof(desc));
+    fprintf(stderr, "echo: new connection %s\n", desc);
+}
+#endif
+
+static forward_target_t g_forward;
+
+static void sockaddr_desc(const struct sockaddr_storage *addr, char *buf, size_t len) {
+    char ip[INET6_ADDRSTRLEN] = "?";
+
+    if (addr->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)addr;
+        inet_ntop(AF_INET6, &a6->sin6_addr, ip, sizeof(ip));
+        snprintf(buf, len, "[%s]:%u", ip, ntohs(a6->sin6_port));
+    } else if (addr->ss_family == AF_INET) {
+        const struct sockaddr_in *a4 = (const struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &a4->sin_addr, ip, sizeof(ip));
+        snprintf(buf, len, "%s:%u", ip, ntohs(a4->sin_port));
+    } else {
+        snprintf(buf, len, "unknown");
+    }
+}
+
+static void initiate_configured_handshakes(wg_device_t *dev) {
+    int count = 0;
+    int sent = 0;
+
+    pthread_rwlock_rdlock(&dev->peers_lock);
+    for (wg_peer_t *peer = dev->peers; peer; peer = peer->next) {
+        count++;
+
+        pthread_mutex_lock(&peer->endpoint_lock);
+        struct sockaddr_storage endpoint;
+        socklen_t endpoint_len = peer->endpoint_len;
+        if (endpoint_len)
+            memcpy(&endpoint, &peer->endpoint, sizeof(endpoint));
+        pthread_mutex_unlock(&peer->endpoint_lock);
+
+        if (!endpoint_len) {
+            fprintf(stderr, "wgx: skip initial handshake for peer without endpoint\n");
+            continue;
+        }
+
+        char endpoint_str[128];
+        sockaddr_desc(&endpoint, endpoint_str, sizeof(endpoint_str));
+        fprintf(stderr, "wgx: initiating handshake with %s\n", endpoint_str);
+        if (device_initiate_handshake_force(dev, peer) == 0)
+            sent++;
+        else
+            fprintf(stderr, "wgx: initial handshake send failed for %s\n", endpoint_str);
+    }
+    pthread_rwlock_unlock(&dev->peers_lock);
+
+    fprintf(stderr, "wgx: initial handshakes requested %d/%d peers\n", sent, count);
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
         printf("wgx v%s\n\nUserspace WireGuard client for linux.\n"
@@ -134,10 +238,13 @@ int main(int argc, char *argv[]) {
     int         foreground   = 0;
     const char *ifname       = NULL;
     int         socks5_mode  = 0;
+    int         server_mode    = 0;
     char        socks5_bind[64] = "127.0.0.1";
     char        socks5_user[256] = "";
     char        socks5_pass[256] = "";
     uint16_t    socks5_port  = 0;
+    uint16_t    server_port    = 0;
+    int         forward_set    = 0;
     char        wg_addr_str[64] = "";
     char        wg_addr6_str[80] = "";
     char        dns_servers[512] = "";
@@ -158,6 +265,26 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             socks5_mode = 1;
+
+        } else if (strcmp(argv[i], "--server") == 0) {
+            if (++i >= argc) { print_usage(argv[0]); return 1; }
+            int p = atoi(argv[i]);
+            if (p <= 0 || p > 65535) {
+                fprintf(stderr, "Invalid --server port: %s\n", argv[i]);
+                return 1;
+            }
+            server_port = (uint16_t)p;
+            server_mode = 1;
+
+        } else if (strcmp(argv[i], "--forward") == 0) {
+            if (++i >= argc) { print_usage(argv[0]); return 1; }
+            if (parse_addr_port(argv[i], g_forward.host,
+                                sizeof(g_forward.host),
+                                &g_forward.port) < 0) {
+                fprintf(stderr, "Invalid --forward address: %s\n", argv[i]);
+                return 1;
+            }
+            forward_set = 1;
 
         } else if (strcmp(argv[i], "--wg-addr") == 0) {
             if (++i >= argc) { print_usage(argv[0]); return 1; }
@@ -183,18 +310,33 @@ int main(int argc, char *argv[]) {
     }
 
     /* Validate arguments */
-    if (socks5_mode) {
+    if (socks5_mode && server_mode) {
+        fprintf(stderr, "--socks5 and --server cannot be used together\n");
+        return 1;
+    }
+    if (forward_set && !server_mode) {
+        fprintf(stderr, "--forward requires --server\n");
+        return 1;
+    }
+    if (server_mode && !forward_set) {
+        fprintf(stderr, "--server requires --forward ADDR:PORT\n");
+        return 1;
+    }
+    int userspace_mode = socks5_mode || server_mode;
+    if (userspace_mode) {
         if (socks5_port == 0) {
-            fprintf(stderr, "--socks5 requires ADDR:PORT\n");
-            return 1;
+            if (socks5_mode) {
+                fprintf(stderr, "--socks5 requires ADDR:PORT\n");
+                return 1;
+            }
         }
         if (!config_path) {
-            fprintf(stderr, "--config WG-CONF is required in SOCKS5 mode\n");
+            fprintf(stderr, "--config WG-CONF is required in userspace mode\n");
             return 1;
         }
         /* Use a placeholder interface name for logging */
         if (!ifname) ifname = "wg0";
-        foreground = 1; /* SOCKS5 mode always runs in foreground */
+        foreground = 1; /* Userspace mode always runs in foreground */
     } else {
         if (!ifname) { print_usage(argv[0]); return 1; }
     }
@@ -222,9 +364,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     g_device.log_level   = log_level;
-    g_device.socks5_mode = socks5_mode;
+    g_device.socks5_mode = userspace_mode;
 
-    if (socks5_mode) {
+    if (userspace_mode) {
         struct in_addr wg_ip;
         struct in6_addr wg_ip6;
         int conf_has_addr4 = 0;
@@ -242,7 +384,7 @@ int main(int argc, char *argv[]) {
 
         if (wg_addr_str[0] == '\0') {
             fprintf(stderr,
-                    "--wg-addr VPN-IP is required in SOCKS5 mode unless [Interface] Address contains IPv4\n");
+                    "--wg-addr VPN-IP is required in userspace mode unless [Interface] Address contains IPv4\n");
             return 1;
         }
         if (inet_pton(AF_INET, wg_addr_str, &wg_ip) != 1) {
@@ -265,7 +407,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* TUN mode: handle inherited fd + optional daemonize */
-    if (!socks5_mode) {
+    if (!userspace_mode) {
         const char *tun_fd_str = getenv(ENV_WG_TUN_FD);
         if (tun_fd_str) {
             g_device.tun_fd = atoi(tun_fd_str);
@@ -316,6 +458,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to start device\n");
         return 1;
     }
+    if (userspace_mode)
+        initiate_configured_handshakes(&g_device);
 
     if (socks5_mode) {
         if (tcp_worker_start(&g_device.tcp_worker, &g_device,
@@ -331,6 +475,39 @@ int main(int argc, char *argv[]) {
         fprintf(stderr,
                 "wgx SOCKS5 proxy: %s:%u  VPN-IP=%s%s%s  config=%s\n",
                 socks5_bind, socks5_port, wg_addr_str,
+                wg_addr6_str[0] ? "  VPN-IPv6=" : "",
+                wg_addr6_str[0] ? wg_addr6_str : "",
+                config_path);
+    } else if (server_mode) {
+        g_device.tcpstack = calloc(1, sizeof(*g_device.tcpstack));
+        if (!g_device.tcpstack) {
+            fprintf(stderr, "Failed to allocate TCP stack\n");
+            device_stop(&g_device);
+            return 1;
+        }
+        tcpstack_init(g_device.tcpstack, &g_device, g_device.wg_local_ip,
+                      g_device.wg_local_ip6_set ? &g_device.wg_local_ip6 : NULL,
+                      &g_loop);
+        if (tcpstack_listen(g_device.tcpstack, AF_INET, server_port,
+                            forward_on_accept, &g_forward) < 0) {
+            fprintf(stderr, "Failed to start server on VPN port %u\n",
+                    server_port);
+            device_stop(&g_device);
+            return 1;
+        }
+        if (g_device.wg_local_ip6_set &&
+            tcpstack_listen(g_device.tcpstack, AF_INET6, server_port,
+                            forward_on_accept, &g_forward) < 0) {
+            fprintf(stderr, "Failed to start IPv6 server on VPN port %u\n",
+                    server_port);
+            device_stop(&g_device);
+            return 1;
+        }
+
+        fprintf(stderr,
+                "wgx server: VPN-IP=%s port=%u forward=%s:%u%s%s  config=%s\n",
+                wg_addr_str, server_port,
+                g_forward.host, g_forward.port,
                 wg_addr6_str[0] ? "  VPN-IPv6=" : "",
                 wg_addr6_str[0] ? wg_addr6_str : "",
                 config_path);

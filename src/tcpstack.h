@@ -12,6 +12,7 @@ struct wg_device;
 
 typedef enum {
     TCPS_CLOSED = 0,
+    TCPS_SYN_RECEIVED,
     TCPS_SYN_SENT,
     TCPS_ESTABLISHED,
     TCPS_FIN_WAIT,
@@ -49,6 +50,7 @@ typedef void (*tcp_data_cb)(struct tcp_conn *conn, const uint8_t *data, size_t l
 typedef void (*tcp_close_cb)(struct tcp_conn *conn);
 typedef void (*tcp_writeable_cb)(struct tcp_conn *conn);
 typedef size_t (*tcp_recv_window_cb)(struct tcp_conn *conn);
+typedef void (*tcp_accept_cb)(struct tcp_conn *conn, void *userdata);
 
 typedef struct tcp_conn {
     struct tcp_conn *next;
@@ -112,6 +114,7 @@ typedef struct tcpstack {
     uv_loop_t        *loop;
     tcp_conn_t       *conns;
     tcp_conn_t       *conn_buckets[WG_TCP_CONN_BUCKETS];
+    struct tcp_listener *listeners;
     tcp_conn_t       *flush_head;
     tcp_conn_t       *flush_tail;
     uv_check_t        flush_check;
@@ -134,6 +137,10 @@ tcp_conn_t *tcpstack_connect(tcpstack_t *stack,
                               tcp_data_cb    on_data,
                               tcp_close_cb   on_close,
                               void          *userdata);
+
+/* Listen for inbound TCP connections to local_port. */
+int tcpstack_listen(tcpstack_t *stack, int family, uint16_t local_port,
+                    tcp_accept_cb on_accept, void *userdata);
 
 /* Send data on an established connection. */
 int tcp_send(tcp_conn_t *conn, const uint8_t *data, size_t len);
