@@ -359,7 +359,7 @@ size_t device_pad_packet(size_t pktlen) {
 }
 
 static void peer_stage_packet(wg_peer_t *peer, const uint8_t *pkt, size_t pktlen) {
-    if (!pkt || pktlen == 0 || pktlen > WG_MAX_MESSAGE_SIZE)
+    if (!pkt || pktlen == 0 || pktlen > WG_DEFAULT_MTU)
         return;
 
     pthread_mutex_lock(&peer->staged_lock);
@@ -376,6 +376,12 @@ static void peer_stage_packet(wg_peer_t *peer, const uint8_t *pkt, size_t pktlen
 /* ---- Packet encryption & send ---- */
 int device_send_to_peer(wg_device_t *dev, wg_peer_t *peer,
                          const uint8_t *pkt, size_t pktlen) {
+    if (pktlen > WG_DEFAULT_MTU) {
+        wg_dbg(dev, "Dropping oversized outbound packet: %zu > MTU %u",
+               pktlen, WG_DEFAULT_MTU);
+        return -1;
+    }
+
     pthread_mutex_lock(&peer->keypairs_lock);
     wg_keypair_t *kp = peer->current_keypair;
     if (!kp) {
