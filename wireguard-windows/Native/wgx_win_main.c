@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -24,8 +25,11 @@ static HANDLE g_quit_event;
 static HMODULE g_wintun_module;
 static pthread_t g_tun_thread;
 static pthread_t g_stdin_thread;
+static pthread_t g_stats_thread;
 static int g_tun_thread_started;
 static int g_stdin_thread_started;
+static int g_stats_thread_started;
+static char g_stats_pipe_name[128];
 
 typedef struct wgx_address_config {
     char addr4[INET_ADDRSTRLEN];
@@ -38,9 +42,26 @@ static void print_usage(const char *prog)
 {
     fprintf(stderr,
             "Usage:\n"
-            "  %s --config WG-CONF [--name TUNNEL-NAME]\n"
+            "  %s --config WG-CONF [--name TUNNEL-NAME] [--pipe-name PIPE]\n"
             "  %s --version\n",
             prog, prog);
+}
+
+static uint64_t fnv1a64(const char *s)
+{
+    uint64_t h = 1469598103934665603ULL;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void make_default_stats_pipe_name(const char *name)
+{
+    snprintf(g_stats_pipe_name, sizeof(g_stats_pipe_name),
+             "\\\\.\\pipe\\wgx-%016llx",
+             (unsigned long long)fnv1a64(name && name[0] ? name : "wgx"));
 }
 
 static char *trim(char *s)
@@ -299,10 +320,89 @@ static void *stdin_reader(void *arg)
     return NULL;
 }
 
+static void read_transfer_stats(uint64_t *rx, uint64_t *tx)
+{
+    *rx = 0;
+    *tx = 0;
+    pthread_rwlock_rdlock(&g_device.peers_lock);
+    for (wg_peer_t *peer = g_device.peers; peer; peer = peer->next) {
+        *rx += atomic_load(&peer->rx_bytes);
+        *tx += atomic_load(&peer->tx_bytes);
+    }
+    pthread_rwlock_unlock(&g_device.peers_lock);
+}
+
+static void *stats_pipe_server(void *arg)
+{
+    (void)arg;
+    while (WaitForSingleObject(g_quit_event, 0) == WAIT_TIMEOUT) {
+        HANDLE pipe = CreateNamedPipeA(g_stats_pipe_name,
+                                       PIPE_ACCESS_DUPLEX,
+                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
+                                       1, 512, 512, 0, NULL);
+        if (pipe == INVALID_HANDLE_VALUE) {
+            Sleep(250);
+            continue;
+        }
+
+        BOOL connected = FALSE;
+        while (WaitForSingleObject(g_quit_event, 0) == WAIT_TIMEOUT) {
+            if (ConnectNamedPipe(pipe, NULL)) {
+                connected = TRUE;
+                break;
+            }
+            DWORD err = GetLastError();
+            if (err == ERROR_PIPE_CONNECTED) {
+                connected = TRUE;
+                break;
+            }
+            if (err != ERROR_PIPE_LISTENING) {
+                break;
+            }
+            Sleep(50);
+        }
+
+        if (connected) {
+            char request[128];
+            DWORD read = 0;
+            BOOL read_ok = FALSE;
+            for (int i = 0; i < 20; ++i) {
+                read_ok = ReadFile(pipe, request, sizeof(request) - 1, &read, NULL);
+                if (read_ok && read > 0)
+                    break;
+                if (GetLastError() != ERROR_NO_DATA)
+                    break;
+                Sleep(10);
+            }
+            if (read_ok && read > 0) {
+                request[read] = '\0';
+                if (strncmp(request, "get=1", 5) == 0) {
+                    uint64_t rx = 0;
+                    uint64_t tx = 0;
+                    char response[128];
+                    DWORD written = 0;
+                    read_transfer_stats(&rx, &tx);
+                    int len = snprintf(response, sizeof(response),
+                                       "rx_bytes=%llu\n"
+                                       "tx_bytes=%llu\n\n",
+                                       (unsigned long long)rx,
+                                       (unsigned long long)tx);
+                    WriteFile(pipe, response, (DWORD)len, &written, NULL);
+                }
+            }
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     const char *config_path = NULL;
     const char *name = "wgx";
+    const char *pipe_name = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) {
@@ -321,6 +421,12 @@ int main(int argc, char **argv)
                 return 2;
             }
             name = argv[i];
+        } else if (strcmp(argv[i], "--pipe-name") == 0) {
+            if (++i >= argc) {
+                print_usage(argv[0]);
+                return 2;
+            }
+            pipe_name = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             print_usage(argv[0]);
@@ -332,6 +438,10 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 2;
     }
+    if (pipe_name && pipe_name[0])
+        snprintf(g_stats_pipe_name, sizeof(g_stats_pipe_name), "%s", pipe_name);
+    else
+        make_default_stats_pipe_name(name);
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -407,6 +517,8 @@ int main(int argc, char **argv)
     }
     if (pthread_create(&g_stdin_thread, NULL, stdin_reader, NULL) == 0)
         g_stdin_thread_started = 1;
+    if (pthread_create(&g_stats_thread, NULL, stats_pipe_server, NULL) == 0)
+        g_stats_thread_started = 1;
 
     initiate_configured_handshakes(&g_device);
     fprintf(stderr, "wgx-win started: name=%s config=%s\n", name, config_path);
@@ -417,6 +529,8 @@ int main(int argc, char **argv)
         pthread_join(g_tun_thread, NULL);
     if (g_stdin_thread_started)
         pthread_cancel(g_stdin_thread);
+    if (g_stats_thread_started)
+        pthread_join(g_stats_thread, NULL);
 
     tun_close(g_device.tun_fd);
     g_device.tun_fd = -1;

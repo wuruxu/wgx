@@ -1,5 +1,13 @@
 #pragma once
 
+#define WGX_VERSION_MAJOR       1
+#define WGX_VERSION_MINOR       0
+#define WGX_VERSION_PATCH       0
+#define WGX_VERSION_BUILD       0
+#define WGX_VERSION_COMMA       WGX_VERSION_MAJOR,WGX_VERSION_MINOR,WGX_VERSION_PATCH,WGX_VERSION_BUILD
+#define WGX_VERSION_STRING      "1.0.0"
+#define WGX_VERSION_WSTRING     L"1.0.0"
+
 #define IDI_WGX_APP             1
 #define IDI_SYSTRAY_UNLOCK      2
 #define IDI_SYSTRAY_LOCK        3

@@ -14,3 +14,35 @@ IDI_WG_ON          ICON "wg-on.ico"
 IDI_WG_CONNECTING  ICON "wg-connecting.ico"
 
 1 RT_MANIFEST "wgx-ui.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION WGX_VERSION_COMMA
+ PRODUCTVERSION WGX_VERSION_COMMA
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "wgx"
+            VALUE "FileDescription", "wgx for Windows"
+            VALUE "FileVersion", WGX_VERSION_STRING
+            VALUE "InternalName", "wgx-ui.exe"
+            VALUE "OriginalFilename", "wgx-ui.exe"
+            VALUE "ProductName", "wgx for Windows"
+            VALUE "ProductVersion", WGX_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

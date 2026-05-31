@@ -5,7 +5,10 @@
 #include "tun.h"
 #include "timers.h"
 #include "uapi.h"
-#ifndef WGX_ANDROID
+#if !defined(WGX_ANDROID) && !defined(WGX_WINDOWS)
+#define WGX_WITH_USERSOCKET_MODES 1
+#endif
+#ifdef WGX_WITH_USERSOCKET_MODES
 #include "tcpstack.h"
 #include "tcp_worker.h"
 #include "socks5.h"
@@ -55,12 +58,23 @@ static void configure_udp_socket_buffers(wg_device_t *dev, uv_udp_t *udp,
         return;
 
     int size = WG_UDP_SOCKET_BUFFER_SIZE;
+#ifdef WGX_WINDOWS
+    if (setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDBUF,
+                   (const char *)&size, sizeof(size)) < 0) {
+        wg_dbg(dev, "%s SO_SNDBUF set failed", label);
+    }
+    if (setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVBUF,
+                   (const char *)&size, sizeof(size)) < 0) {
+        wg_dbg(dev, "%s SO_RCVBUF set failed", label);
+    }
+#else
     if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size)) < 0) {
         wg_dbg(dev, "%s SO_SNDBUF set failed", label);
     }
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size)) < 0) {
         wg_dbg(dev, "%s SO_RCVBUF set failed", label);
     }
+#endif
 }
 
 static wg_tx_buffer_t *tx_buffer_acquire(wg_device_t *dev) {
@@ -464,7 +478,7 @@ int device_send_keepalive(wg_device_t *dev, wg_peer_t *peer) {
 }
 
 int device_send_ip_packet(wg_device_t *dev, const uint8_t *pkt, size_t len) {
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
     if (dev->socks5_mode && dev->tcp_worker)
         return tcp_worker_enqueue_outbound(dev->tcp_worker, pkt, len);
 #endif
@@ -811,7 +825,7 @@ static void handle_transport(wg_device_t *dev,
 
     /* Deliver plaintext if non-empty */
     if (ptlen > 0) {
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
         if (dev->socks5_mode && dev->tcp_worker) {
             tcp_worker_enqueue_inbound(dev->tcp_worker, plaintext, ptlen);
         } else if (dev->socks5_mode && dev->tcpstack) {
@@ -843,7 +857,7 @@ static void handle_transport(wg_device_t *dev,
                 tun_write(dev->tun_fd, plaintext, ptlen);
             else
                 wg_dbg(dev, "Dropped packet from peer: not in allowed IPs");
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
         }
 #endif
     } else {
@@ -1077,7 +1091,7 @@ int device_start(wg_device_t *dev) {
     }
 
     /* Start UAPI server (skipped in SOCKS5 mode and Android JNI mode) */
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
     if (!dev->socks5_mode) {
         snprintf(dev->uapi_path, sizeof(dev->uapi_path),
                  "/var/run/wireguard/%s.sock", dev->ifname);
@@ -1105,12 +1119,12 @@ void device_stop(wg_device_t *dev) {
         uv_udp_recv_stop(&dev->udp6);
         uv_close((uv_handle_t *)&dev->udp6, NULL);
     }
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
     if (!dev->socks5_mode)
         uapi_stop(dev);
 #endif
 
-#ifndef WGX_ANDROID
+#ifdef WGX_WITH_USERSOCKET_MODES
     if (dev->socks5_mode && dev->tcp_worker) {
         tcp_worker_stop(dev->tcp_worker);
     }

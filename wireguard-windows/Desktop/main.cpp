@@ -46,6 +46,8 @@ struct TunnelProfile {
     std::wstring allowed_ips;
     std::wstring state = L"Stopped";
     std::wstring last_log;
+    uint64_t tx_bytes = 0;
+    uint64_t rx_bytes = 0;
 };
 
 struct RunningTunnel {
@@ -83,8 +85,6 @@ static HFONT g_title_font;
 static HFONT g_sidebar_title_font;
 static HFONT g_ui_font;
 static HICON g_app_icon;
-static HICON g_tray_unlock_icon;
-static HICON g_tray_lock_icon;
 static HICON g_wg_off_icon;
 static HICON g_wg_on_icon;
 static HICON g_wg_connecting_icon;
@@ -93,6 +93,8 @@ static HBITMAP g_status_dot_stopped;
 static HBITMAP g_status_dot_running;
 static WNDPROC g_list_proc;
 static NOTIFYICONDATAW g_tray{};
+static UINT g_taskbar_created_message;
+static bool g_tray_added = false;
 static std::vector<TunnelProfile> g_tunnels;
 static std::map<std::wstring, RunningTunnel> g_running;
 static int g_sidebar_width = 300;
@@ -177,6 +179,45 @@ static std::wstring utf8_to_wide(const std::string &s)
 static bool any_tunnel_running()
 {
     return !g_running.empty();
+}
+
+static uint64_t fnv1a64_wide(const std::wstring &text)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (wchar_t ch : text) {
+        uint32_t v = (uint32_t)ch;
+        for (int i = 0; i < 4; ++i) {
+            h ^= (uint8_t)(v & 0xff);
+            h *= 1099511628211ULL;
+            v >>= 8;
+        }
+    }
+    return h;
+}
+
+static std::wstring stats_pipe_name_for_tunnel(const std::wstring &name)
+{
+    wchar_t suffix[32];
+    swprintf(suffix, 32, L"%016llx", (unsigned long long)fnv1a64_wide(name));
+    return std::wstring(L"\\\\.\\pipe\\wgx-") + suffix;
+}
+
+static std::wstring format_bytes(uint64_t bytes)
+{
+    const wchar_t *units[] = { L"B", L"KB", L"MB", L"GB", L"TB" };
+    double value = (double)bytes;
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+
+    wchar_t buf[64];
+    if (unit == 0)
+        swprintf(buf, 64, L"%llu %ls", (unsigned long long)bytes, units[unit]);
+    else
+        swprintf(buf, 64, L"%.1f %ls", value, units[unit]);
+    return buf;
 }
 
 static void append_log(TunnelProfile &t, const std::wstring &line)
@@ -715,9 +756,13 @@ static void add_tray(HWND hwnd)
     g_tray.uID = 1;
     g_tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_tray.uCallbackMessage = WGX_TRAY_MESSAGE;
-    g_tray.hIcon = g_tray_unlock_icon;
-    wcscpy_s(g_tray.szTip, L"wgx");
-    Shell_NotifyIconW(NIM_ADD, &g_tray);
+    g_tray.hIcon = g_app_icon;
+    wcscpy_s(g_tray.szTip, any_tunnel_running() ? L"wgx connected" : L"wgx");
+    if (Shell_NotifyIconW(NIM_ADD, &g_tray)) {
+        g_tray_added = true;
+        g_tray.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &g_tray);
+    }
 }
 
 static void update_tray_icon()
@@ -725,14 +770,86 @@ static void update_tray_icon()
     if (!g_tray.hWnd)
         return;
     g_tray.uFlags = NIF_ICON | NIF_TIP;
-    g_tray.hIcon = any_tunnel_running() ? g_tray_lock_icon : g_tray_unlock_icon;
+    g_tray.hIcon = g_app_icon;
     wcscpy_s(g_tray.szTip, any_tunnel_running() ? L"wgx connected" : L"wgx");
-    Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+    if (!Shell_NotifyIconW(NIM_MODIFY, &g_tray)) {
+        g_tray_added = false;
+        add_tray(g_tray.hWnd);
+    }
+}
+
+static bool parse_u64_field(const char *text, const char *key, uint64_t *value)
+{
+    const char *p = strstr(text, key);
+    if (!p)
+        return false;
+    p += strlen(key);
+    if (*p != '=')
+        return false;
+    ++p;
+    uint64_t out = 0;
+    while (*p >= '0' && *p <= '9') {
+        out = out * 10 + (uint64_t)(*p - '0');
+        ++p;
+    }
+    *value = out;
+    return true;
+}
+
+static bool query_tunnel_stats(TunnelProfile &t)
+{
+    auto it = g_running.find(t.name);
+    if (it == g_running.end())
+        return false;
+
+    std::wstring pipe_name = stats_pipe_name_for_tunnel(t.name);
+    HANDLE pipe = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                              OPEN_EXISTING, 0, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE) {
+        if (GetLastError() != ERROR_PIPE_BUSY ||
+            !WaitNamedPipeW(pipe_name.c_str(), 80))
+            return false;
+        pipe = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+        if (pipe == INVALID_HANDLE_VALUE)
+            return false;
+    }
+
+    DWORD mode = PIPE_READMODE_MESSAGE;
+    SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+    const char request[] = "get=1\n\n";
+    DWORD written = 0;
+    BOOL ok = WriteFile(pipe, request, sizeof(request) - 1, &written, nullptr);
+    if (!ok) {
+        CloseHandle(pipe);
+        return false;
+    }
+
+    char response[256];
+    DWORD read = 0;
+    ok = ReadFile(pipe, response, sizeof(response) - 1, &read, nullptr);
+    CloseHandle(pipe);
+    if (!ok || read == 0)
+        return false;
+    response[read] = '\0';
+
+    uint64_t rx = 0;
+    uint64_t tx = 0;
+    if (!parse_u64_field(response, "rx_bytes", &rx) ||
+        !parse_u64_field(response, "tx_bytes", &tx))
+        return false;
+
+    bool changed = t.rx_bytes != rx || t.tx_bytes != tx;
+    t.rx_bytes = rx;
+    t.tx_bytes = tx;
+    return changed;
 }
 
 static void remove_tray()
 {
-    Shell_NotifyIconW(NIM_DELETE, &g_tray);
+    if (g_tray_added)
+        Shell_NotifyIconW(NIM_DELETE, &g_tray);
+    g_tray_added = false;
 }
 
 static void show_tray_menu(HWND hwnd)
@@ -771,6 +888,33 @@ static void center_window_on_owner(HWND hwnd, HWND owner)
     int x = owner_rc.left + ((owner_rc.right - owner_rc.left) - width) / 2;
     int y = owner_rc.top + ((owner_rc.bottom - owner_rc.top) - height) / 2;
     SetWindowPos(hwnd, nullptr, x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+static HHOOK g_center_message_box_hook;
+static HWND g_center_message_box_owner;
+
+static LRESULT CALLBACK center_message_box_proc(int code, WPARAM wparam, LPARAM lparam)
+{
+    if (code == HCBT_ACTIVATE) {
+        center_window_on_owner((HWND)wparam, g_center_message_box_owner);
+        UnhookWindowsHookEx(g_center_message_box_hook);
+        g_center_message_box_hook = nullptr;
+        g_center_message_box_owner = nullptr;
+    }
+    return CallNextHookEx(g_center_message_box_hook, code, wparam, lparam);
+}
+
+static int centered_message_box(HWND owner, const wchar_t *text, const wchar_t *caption, UINT type)
+{
+    g_center_message_box_owner = owner;
+    g_center_message_box_hook = SetWindowsHookExW(WH_CBT, center_message_box_proc, nullptr, GetCurrentThreadId());
+    int result = MessageBoxW(owner, text, caption, type);
+    if (g_center_message_box_hook) {
+        UnhookWindowsHookEx(g_center_message_box_hook);
+        g_center_message_box_hook = nullptr;
+    }
+    g_center_message_box_owner = nullptr;
+    return result;
 }
 
 static LRESULT CALLBACK name_prompt_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -863,9 +1007,10 @@ static bool prompt_tunnel_name(HWND owner, const wchar_t *title, const std::wstr
     if (!dialog)
         return false;
 
-    center_window_on_owner(dialog, owner);
     EnableWindow(owner, FALSE);
     ShowWindow(dialog, SW_SHOW);
+    center_window_on_owner(dialog, owner);
+    SetForegroundWindow(dialog);
     MSG msg;
     while (IsWindow(dialog) && GetMessageW(&msg, nullptr, 0, 0)) {
         if (!IsDialogMessageW(dialog, &msg)) {
@@ -1308,10 +1453,10 @@ static void toggle_selected_tunnel(HWND hwnd)
 
 static void show_about(HWND hwnd)
 {
-    MessageBoxW(hwnd,
-                L"wgx for Windows\n\nNative WireGuard tunnel manager.",
-                L"About wgx",
-                MB_OK | MB_ICONINFORMATION);
+    centered_message_box(hwnd,
+                         L"wgx for Windows " WGX_VERSION_WSTRING L"\n\nNative WireGuard tunnel manager.",
+                         L"About wgx",
+                         MB_OK | MB_ICONINFORMATION);
 }
 
 static void create_main_menu(HWND hwnd)
@@ -1373,7 +1518,9 @@ static void start_tunnel(HWND hwnd)
     si.hStdOutput = output_write;
     si.hStdError = output_write;
 
-    std::wstring cmd = L"\"" + exe + L"\" --config \"" + t->path + L"\" --name \"" + t->name + L"\"";
+    std::wstring pipe_name = stats_pipe_name_for_tunnel(t->name);
+    std::wstring cmd = L"\"" + exe + L"\" --config \"" + t->path + L"\" --name \"" + t->name +
+                       L"\" --pipe-name \"" + pipe_name + L"\"";
     BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, exe_dir().c_str(), &si, &pi);
     CloseHandle(stdin_read);
     CloseHandle(output_write);
@@ -1392,6 +1539,8 @@ static void start_tunnel(HWND hwnd)
     g_running[t->name] = running;
     t->state = L"Connecting";
     t->last_log = L"Process started.";
+    t->rx_bytes = 0;
+    t->tx_bytes = 0;
     refresh_list();
     update_tray_icon();
 }
@@ -1424,6 +1573,7 @@ static void stop_tunnel()
     auto it = g_running.find(t->name);
     if (it == g_running.end())
         return;
+    query_tunnel_stats(*t);
 
     const char stop[] = "stop\n";
     DWORD written = 0;
@@ -1449,6 +1599,7 @@ static void stop_tunnel()
 static void check_running_processes()
 {
     bool changed = false;
+    bool stats_changed = false;
     for (auto it = g_running.begin(); it != g_running.end();) {
         TunnelProfile *profile = nullptr;
         for (TunnelProfile &t : g_tunnels) {
@@ -1463,6 +1614,8 @@ static void check_running_processes()
         DWORD code = STILL_ACTIVE;
         GetExitCodeProcess(it->second.pi.hProcess, &code);
         if (code == STILL_ACTIVE) {
+            if (profile && query_tunnel_stats(*profile))
+                stats_changed = true;
             if (profile && profile->state == L"Connecting" &&
                 GetTickCount() - it->second.started_tick > 1500) {
                 profile->state = L"Running";
@@ -1488,6 +1641,8 @@ static void check_running_processes()
         update_tray_icon();
     } else {
         refresh_detail();
+        if (stats_changed && g_main_window)
+            InvalidateRect(g_main_window, nullptr, FALSE);
     }
 }
 
@@ -1499,8 +1654,8 @@ static void delete_tunnel(HWND hwnd)
     std::wstring name = t->name;
     std::wstring path = t->path;
     std::wstring message = L"Delete tunnel \"" + name + L"\"?\n\nThis cannot be undone.";
-    int result = MessageBoxW(hwnd, message.c_str(), L"Delete Tunnel",
-                             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    int result = centered_message_box(hwnd, message.c_str(), L"Delete Tunnel",
+                                      MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (result != IDYES)
         return;
 
@@ -1729,6 +1884,12 @@ static LRESULT CALLBACK list_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
+    if (g_taskbar_created_message && msg == g_taskbar_created_message) {
+        g_tray_added = false;
+        add_tray(hwnd);
+        return 0;
+    }
+
     switch (msg) {
     case WM_CREATE: {
         g_dpi = window_dpi(hwnd);
@@ -1736,8 +1897,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         recreate_fonts();
         create_main_menu(hwnd);
         g_app_icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_WGX_APP));
-        g_tray_unlock_icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_SYSTRAY_UNLOCK));
-        g_tray_lock_icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_SYSTRAY_LOCK));
+        g_taskbar_created_message = RegisterWindowMessageW(L"TaskbarCreated");
         load_status_icons();
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)g_app_icon);
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_app_icon);
@@ -1853,6 +2013,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 DrawTextW(dc, text, -1, &label_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
                 label_y += label_row;
             }
+            int transfer_y = label_y + scale_px(14);
+            RECT transfer_label{ detail_x, transfer_y, detail_x + scale_px(120), transfer_y + scale_px(24) };
+            DrawTextW(dc, L"Transfer", -1, &transfer_label, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+
+            TunnelProfile *t = selected_tunnel();
+            std::wstring tx = L"\u2191 " + format_bytes(t ? t->tx_bytes : 0);
+            std::wstring rx = L"\u2193 " + format_bytes(t ? t->rx_bytes : 0);
+            RECT tx_rc{ detail_x + scale_px(130), transfer_y, detail_x + scale_px(300), transfer_y + scale_px(24) };
+            SIZE tx_size{};
+            GetTextExtentPoint32W(dc, tx.c_str(), (int)tx.size(), &tx_size);
+            int rx_left = tx_rc.left + tx_size.cx + scale_px(8);
+            RECT rx_rc{ rx_left, transfer_y, detail_x + right_w, transfer_y + scale_px(24) };
+            SetTextColor(dc, RGB(30, 120, 70));
+            DrawTextW(dc, tx.c_str(), -1, &tx_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+            SetTextColor(dc, RGB(30, 90, 160));
+            DrawTextW(dc, rx.c_str(), -1, &rx_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
             SelectObject(dc, old_detail_font);
         }
 
@@ -1977,13 +2153,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         check_running_processes();
         return 0;
     case WGX_TRAY_MESSAGE:
-        if (lparam == WM_LBUTTONDBLCLK) {
+    {
+        UINT event = LOWORD(lparam);
+        if (event == WM_LBUTTONDBLCLK || lparam == WM_LBUTTONDBLCLK) {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
-        } else if (lparam == WM_RBUTTONUP) {
+        } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU ||
+                   lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             show_tray_menu(hwnd);
         }
         return 0;
+    }
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
         return 0;
