@@ -24,6 +24,7 @@ typedef struct forward_conn {
     size_t            pending_wg_len;
     size_t            pending_wg_cap;
     uint8_t          *pending_local;
+    size_t            pending_local_off;
     size_t            pending_local_len;
     size_t            pending_local_cap;
     int               local_connected;
@@ -94,7 +95,17 @@ static int forward_pending_local_append(forward_conn_t *fc,
                                         const uint8_t *data, size_t len) {
     if (len > FORWARD_PENDING_LIMIT - fc->pending_local_len)
         return -1;
-    if (fc->pending_local_len + len > fc->pending_local_cap) {
+
+    size_t tail = fc->pending_local_off + fc->pending_local_len;
+    if (tail + len > fc->pending_local_cap && fc->pending_local_off > 0) {
+        memmove(fc->pending_local,
+                fc->pending_local + fc->pending_local_off,
+                fc->pending_local_len);
+        fc->pending_local_off = 0;
+        tail = fc->pending_local_len;
+    }
+
+    if (tail + len > fc->pending_local_cap) {
         size_t cap = fc->pending_local_cap ? fc->pending_local_cap : 4096;
         while (cap < fc->pending_local_len + len)
             cap *= 2;
@@ -103,8 +114,9 @@ static int forward_pending_local_append(forward_conn_t *fc,
             return -1;
         fc->pending_local = p;
         fc->pending_local_cap = cap;
+        tail = fc->pending_local_off + fc->pending_local_len;
     }
-    memcpy(fc->pending_local + fc->pending_local_len, data, len);
+    memcpy(fc->pending_local + tail, data, len);
     fc->pending_local_len += len;
     return 0;
 }
@@ -116,14 +128,16 @@ static void forward_flush_pending_local(forward_conn_t *fc) {
             break;
         size_t send_len = fc->pending_local_len < avail ?
             fc->pending_local_len : avail;
-        if (tcp_send(fc->wg_conn, fc->pending_local, send_len) < 0) {
+        if (tcp_send(fc->wg_conn,
+                     fc->pending_local + fc->pending_local_off,
+                     send_len) < 0) {
             forward_close(fc);
             return;
         }
+        fc->pending_local_off += send_len;
         fc->pending_local_len -= send_len;
-        if (fc->pending_local_len > 0)
-            memmove(fc->pending_local, fc->pending_local + send_len,
-                    fc->pending_local_len);
+        if (fc->pending_local_len == 0)
+            fc->pending_local_off = 0;
     }
     if (fc && fc->pending_local_len == 0 && fc->local_read_paused &&
         fc->local_connected && !fc->local_closing && !fc->local_closed) {
