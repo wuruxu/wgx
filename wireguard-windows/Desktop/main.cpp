@@ -58,15 +58,15 @@ struct RunningTunnel {
 };
 
 struct OwnerDrawMenuItem {
-    const wchar_t *text;
+    UINT text_id;
     SHSTOCKICONID icon;
     int resource_icon;
     bool close_icon;
 };
 
-static OwnerDrawMenuItem g_import_file_menu{ L"Import Tunnel from file...", SIID_INVALID, IDI_MENU_ADD, false };
-static OwnerDrawMenuItem g_import_qr_menu{ L"Import Tunnel from QR Code", SIID_INVALID, IDI_IMPORT_FROM_QR, false };
-static OwnerDrawMenuItem g_exit_menu{ L"Exit", SIID_INVALID, IDI_MENU_EXIT, false };
+static OwnerDrawMenuItem g_import_file_menu{ IDS_IMPORT_TUNNEL_FROM_FILE, SIID_INVALID, IDI_MENU_ADD, false };
+static OwnerDrawMenuItem g_import_qr_menu{ IDS_IMPORT_TUNNEL_FROM_QR, SIID_INVALID, IDI_IMPORT_FROM_QR, false };
+static OwnerDrawMenuItem g_exit_menu{ IDS_EXIT, SIID_INVALID, IDI_MENU_EXIT, false };
 
 static HWND g_main_window;
 static HWND g_list;
@@ -110,6 +110,27 @@ static void start_tunnel(HWND hwnd);
 static void stop_tunnel();
 static void layout_controls(HWND hwnd);
 static void append_owner_draw_menu_item(HMENU menu, UINT id, OwnerDrawMenuItem *data);
+
+static std::wstring tr(UINT id)
+{
+    wchar_t buffer[1024];
+    int len = LoadStringW(GetModuleHandleW(nullptr), id, buffer, ARRAYSIZE(buffer));
+    return len > 0 ? std::wstring(buffer, (size_t)len) : std::wstring();
+}
+
+static std::wstring file_dialog_filter()
+{
+    std::wstring filter = tr(IDS_FILTER_WIREGUARD_CONFIG);
+    filter.push_back(L'\0');
+    filter += L"*.conf";
+    filter.push_back(L'\0');
+    filter += tr(IDS_FILTER_ALL_FILES);
+    filter.push_back(L'\0');
+    filter += L"*.*";
+    filter.push_back(L'\0');
+    filter.push_back(L'\0');
+    return filter;
+}
 
 static int scale_px(int value)
 {
@@ -379,7 +400,7 @@ static HICON status_icon_for_state(const std::wstring &state)
 static std::wstring detail_title_text()
 {
     TunnelProfile *t = selected_tunnel();
-    return t ? t->name : L"No tunnel selected";
+    return t ? t->name : tr(IDS_NO_TUNNEL_SELECTED);
 }
 
 static std::wstring detail_state()
@@ -422,7 +443,7 @@ static void refresh_detail()
         set_text(g_allowed_ips, L"");
         set_text(g_log, L"");
         if (g_toggle_button)
-            SetWindowTextW(g_toggle_button, L"Start");
+            SetWindowTextW(g_toggle_button, tr(IDS_START).c_str());
         return;
     }
 
@@ -435,7 +456,7 @@ static void refresh_detail()
     set_text(g_allowed_ips, t->allowed_ips);
     set_text(g_log, t->last_log);
     if (g_toggle_button)
-        SetWindowTextW(g_toggle_button, is_selected_tunnel_running() ? L"Stop" : L"Start");
+        SetWindowTextW(g_toggle_button, tr(is_selected_tunnel_running() ? IDS_STOP : IDS_START).c_str());
 }
 
 static void refresh_list()
@@ -608,11 +629,18 @@ static void layout_controls(HWND hwnd)
 static HICON load_resource_icon(int id, int size)
 {
     return (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(id),
-                             IMAGE_ICON, size, size, LR_DEFAULTCOLOR | LR_SHARED);
+                             IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
 }
 
 static void load_status_icons()
 {
+    if (g_wg_off_icon)
+        DestroyIcon(g_wg_off_icon);
+    if (g_wg_on_icon)
+        DestroyIcon(g_wg_on_icon);
+    if (g_wg_connecting_icon)
+        DestroyIcon(g_wg_connecting_icon);
+
     int size = scale_px(24);
     g_wg_off_icon = load_resource_icon(IDI_WG_OFF, size);
     g_wg_on_icon = load_resource_icon(IDI_WG_ON, size);
@@ -757,7 +785,7 @@ static void add_tray(HWND hwnd)
     g_tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_tray.uCallbackMessage = WGX_TRAY_MESSAGE;
     g_tray.hIcon = g_app_icon;
-    wcscpy_s(g_tray.szTip, any_tunnel_running() ? L"wgx connected" : L"wgx");
+    wcscpy_s(g_tray.szTip, any_tunnel_running() ? tr(IDS_TRAY_CONNECTED).c_str() : L"wgx");
     if (Shell_NotifyIconW(NIM_ADD, &g_tray)) {
         g_tray_added = true;
         g_tray.uVersion = NOTIFYICON_VERSION_4;
@@ -771,7 +799,7 @@ static void update_tray_icon()
         return;
     g_tray.uFlags = NIF_ICON | NIF_TIP;
     g_tray.hIcon = g_app_icon;
-    wcscpy_s(g_tray.szTip, any_tunnel_running() ? L"wgx connected" : L"wgx");
+    wcscpy_s(g_tray.szTip, any_tunnel_running() ? tr(IDS_TRAY_CONNECTED).c_str() : L"wgx");
     if (!Shell_NotifyIconW(NIM_MODIFY, &g_tray)) {
         g_tray_added = false;
         add_tray(g_tray.hWnd);
@@ -855,9 +883,9 @@ static void remove_tray()
 static void show_tray_menu(HWND hwnd)
 {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, L"Manage tunnels");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, tr(IDS_MANAGE_TUNNELS).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, tr(IDS_EXIT).c_str());
     POINT pt;
     GetCursorPos(&pt);
     SetForegroundWindow(hwnd);
@@ -917,6 +945,28 @@ static int centered_message_box(HWND owner, const wchar_t *text, const wchar_t *
     return result;
 }
 
+static int centered_message_box_with_icon(HWND owner, const wchar_t *text, const wchar_t *caption, UINT type, WORD icon)
+{
+    MSGBOXPARAMSW params{};
+    params.cbSize = sizeof(params);
+    params.hwndOwner = owner;
+    params.hInstance = GetModuleHandleW(nullptr);
+    params.lpszText = text;
+    params.lpszCaption = caption;
+    params.dwStyle = type | MB_USERICON;
+    params.lpszIcon = MAKEINTRESOURCEW(icon);
+
+    g_center_message_box_owner = owner;
+    g_center_message_box_hook = SetWindowsHookExW(WH_CBT, center_message_box_proc, nullptr, GetCurrentThreadId());
+    int result = MessageBoxIndirectW(&params);
+    if (g_center_message_box_hook) {
+        UnhookWindowsHookEx(g_center_message_box_hook);
+        g_center_message_box_hook = nullptr;
+    }
+    g_center_message_box_owner = nullptr;
+    return result;
+}
+
 static LRESULT CALLBACK name_prompt_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     NamePrompt *prompt = (NamePrompt *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -931,17 +981,17 @@ static LRESULT CALLBACK name_prompt_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         int edit_h = scale_px(24);
         int button_w = scale_px(82);
         int button_h = scale_px(28);
-        HWND label_hwnd = CreateWindowW(L"STATIC", L"Tunnel name:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        HWND label_hwnd = CreateWindowW(L"STATIC", tr(IDS_TUNNEL_NAME).c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT,
                                         margin, margin, scale_px(330), label_h,
                                         hwnd, nullptr, nullptr, nullptr);
         prompt->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", prompt->initial_name.c_str(),
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
                                        margin, margin + label_h + scale_px(6), scale_px(330), edit_h,
                                        hwnd, (HMENU)(INT_PTR)ID_NAME_EDIT, nullptr, nullptr);
-        HWND ok = CreateWindowW(L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        HWND ok = CreateWindowW(L"BUTTON", tr(IDS_OK).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                                 margin + scale_px(164), margin + label_h + edit_h + scale_px(18),
                                 button_w, button_h, hwnd, (HMENU)(INT_PTR)IDOK, nullptr, nullptr);
-        HWND cancel = CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        HWND cancel = CreateWindowW(L"BUTTON", tr(IDS_CANCEL).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                     margin + scale_px(254), margin + label_h + edit_h + scale_px(18),
                                     button_w, button_h, hwnd, (HMENU)(INT_PTR)IDCANCEL, nullptr, nullptr);
         set_control_font(label_hwnd);
@@ -961,7 +1011,7 @@ static LRESULT CALLBACK name_prompt_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
             name.resize((size_t)len);
             name = trim(name);
             if (name.empty()) {
-                MessageBoxW(hwnd, L"Enter a tunnel name.", L"wgx", MB_ICONWARNING);
+                MessageBoxW(hwnd, tr(IDS_ENTER_TUNNEL_NAME).c_str(), L"wgx", MB_ICONWARNING);
                 SetFocus(prompt->edit);
                 return 0;
             }
@@ -1028,10 +1078,11 @@ static bool prompt_tunnel_name(HWND owner, const wchar_t *title, const std::wstr
 static void import_tunnel(HWND hwnd)
 {
     wchar_t file[MAX_PATH] = L"";
+    std::wstring filter = file_dialog_filter();
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = L"WireGuard config (*.conf)\0*.conf\0All files (*.*)\0*.*\0";
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrFile = file;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -1039,12 +1090,12 @@ static void import_tunnel(HWND hwnd)
         return;
 
     std::wstring name;
-    if (!prompt_tunnel_name(hwnd, L"Import Tunnel", file_stem(file), name))
+    if (!prompt_tunnel_name(hwnd, tr(IDS_IMPORT_TUNNEL).c_str(), file_stem(file), name))
         return;
 
     std::wstring target = unique_target_path_for_name(name);
     if (!CopyFileW(file, target.c_str(), TRUE)) {
-        MessageBoxW(hwnd, L"Failed to import config.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_IMPORT_CONFIG).c_str(), L"wgx", MB_ICONERROR);
         return;
     }
     load_tunnels();
@@ -1366,7 +1417,7 @@ static bool write_imported_tunnel(HWND hwnd, const std::string &config, const st
     HANDLE file = CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        MessageBoxW(hwnd, L"Failed to create tunnel config.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_CREATE_CONFIG).c_str(), L"wgx", MB_ICONERROR);
         return false;
     }
 
@@ -1375,7 +1426,7 @@ static bool write_imported_tunnel(HWND hwnd, const std::string &config, const st
     CloseHandle(file);
     if (!ok || written != (DWORD)config.size()) {
         DeleteFileW(target.c_str());
-        MessageBoxW(hwnd, L"Failed to write tunnel config.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_WRITE_CONFIG).c_str(), L"wgx", MB_ICONERROR);
         return false;
     }
     return true;
@@ -1397,30 +1448,27 @@ static void import_qr_tunnel(HWND hwnd)
     int height = 0;
     if (!capture_screen_gray(selection, gray, width, height)) {
         ShowWindow(hwnd, SW_RESTORE);
-        MessageBoxW(hwnd, L"Failed to capture selected screen region.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_CAPTURE_SCREEN).c_str(), L"wgx", MB_ICONERROR);
         return;
     }
 
     std::string payload;
     if (!decode_qr_payload(gray, width, height, payload)) {
         ShowWindow(hwnd, SW_RESTORE);
-        MessageBoxW(hwnd,
-                    L"No QR code was recognized in the selected region.\n\nSelect a slightly larger area around the QR code and try again.",
-                    L"wgx",
-                    MB_ICONWARNING);
+        MessageBoxW(hwnd, tr(IDS_QR_NOT_RECOGNIZED).c_str(), L"wgx", MB_ICONWARNING);
         return;
     }
 
     if (!looks_like_wireguard_config(payload)) {
         ShowWindow(hwnd, SW_RESTORE);
-        MessageBoxW(hwnd, L"The QR code does not contain a WireGuard tunnel config.", L"wgx", MB_ICONWARNING);
+        MessageBoxW(hwnd, tr(IDS_QR_NOT_WIREGUARD_CONFIG).c_str(), L"wgx", MB_ICONWARNING);
         return;
     }
 
     ShowWindow(hwnd, SW_RESTORE);
     SetForegroundWindow(hwnd);
     std::wstring name;
-    if (!prompt_tunnel_name(hwnd, L"Import Tunnel from QR Code", L"qr-tunnel", name))
+    if (!prompt_tunnel_name(hwnd, tr(IDS_IMPORT_TUNNEL_FROM_QR).c_str(), L"qr-tunnel", name))
         return;
 
     if (write_imported_tunnel(hwnd, payload, name)) {
@@ -1453,10 +1501,12 @@ static void toggle_selected_tunnel(HWND hwnd)
 
 static void show_about(HWND hwnd)
 {
-    centered_message_box(hwnd,
-                         L"wgx for Windows " WGX_VERSION_WSTRING L"\n\nNative WireGuard tunnel manager.",
-                         L"About wgx",
-                         MB_OK | MB_ICONINFORMATION);
+    std::wstring text = tr(IDS_APP_TITLE) + L" " WGX_VERSION_WSTRING L"\n\n" + tr(IDS_ABOUT_TEXT);
+    centered_message_box_with_icon(hwnd,
+                                   text.c_str(),
+                                   tr(IDS_ABOUT_WGX).c_str(),
+                                   MB_OK,
+                                   IDI_WGX_APP);
 }
 
 static void create_main_menu(HWND hwnd)
@@ -1470,10 +1520,10 @@ static void create_main_menu(HWND hwnd)
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     append_owner_draw_menu_item(file, ID_FILE_EXIT, &g_exit_menu);
 
-    AppendMenuW(about, MF_STRING, ID_ABOUT, L"About wgx");
+    AppendMenuW(about, MF_STRING, ID_ABOUT, tr(IDS_ABOUT_WGX).c_str());
 
-    AppendMenuW(menubar, MF_POPUP, (UINT_PTR)file, L"File");
-    AppendMenuW(menubar, MF_POPUP, (UINT_PTR)about, L"About");
+    AppendMenuW(menubar, MF_POPUP, (UINT_PTR)file, tr(IDS_FILE).c_str());
+    AppendMenuW(menubar, MF_POPUP, (UINT_PTR)about, tr(IDS_ABOUT).c_str());
     MENUITEMINFOW info{};
     info.cbSize = sizeof(info);
     info.fMask = MIIM_FTYPE;
@@ -1490,7 +1540,7 @@ static void start_tunnel(HWND hwnd)
 
     std::wstring exe = exe_dir() + L"\\wgx-win.exe";
     if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxW(hwnd, L"wgx-win.exe was not found next to wgx-ui.exe.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_WGX_WIN_NOT_FOUND).c_str(), L"wgx", MB_ICONERROR);
         return;
     }
 
@@ -1527,7 +1577,7 @@ static void start_tunnel(HWND hwnd)
     if (!ok) {
         CloseHandle(stdin_write);
         CloseHandle(output_read);
-        MessageBoxW(hwnd, L"Failed to start wgx-win.exe.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_START_WGX_WIN).c_str(), L"wgx", MB_ICONERROR);
         return;
     }
 
@@ -1538,7 +1588,7 @@ static void start_tunnel(HWND hwnd)
     running.started_tick = GetTickCount();
     g_running[t->name] = running;
     t->state = L"Connecting";
-    t->last_log = L"Process started.";
+    t->last_log = tr(IDS_PROCESS_STARTED);
     t->rx_bytes = 0;
     t->tx_bytes = 0;
     refresh_list();
@@ -1591,7 +1641,7 @@ static void stop_tunnel()
     CloseHandle(it->second.pi.hProcess);
     g_running.erase(it);
     t->state = L"Stopped";
-    append_log(*t, L"Process stopped.");
+    append_log(*t, tr(IDS_PROCESS_STOPPED));
     refresh_list();
     update_tray_icon();
 }
@@ -1627,7 +1677,7 @@ static void check_running_processes()
 
         if (profile) {
             profile->state = code == 0 ? L"Stopped" : L"Failed";
-            append_log(*profile, L"Process exited with code " + std::to_wstring(code) + L".");
+            append_log(*profile, tr(IDS_PROCESS_EXITED_PREFIX) + std::to_wstring(code) + tr(IDS_PROCESS_EXITED_SUFFIX));
             changed = true;
         }
         CloseHandle(it->second.stdin_write);
@@ -1653,15 +1703,15 @@ static void delete_tunnel(HWND hwnd)
         return;
     std::wstring name = t->name;
     std::wstring path = t->path;
-    std::wstring message = L"Delete tunnel \"" + name + L"\"?\n\nThis cannot be undone.";
-    int result = centered_message_box(hwnd, message.c_str(), L"Delete Tunnel",
+    std::wstring message = tr(IDS_DELETE_TUNNEL_PREFIX) + name + tr(IDS_DELETE_TUNNEL_SUFFIX);
+    int result = centered_message_box(hwnd, message.c_str(), tr(IDS_DELETE_TUNNEL).c_str(),
                                       MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (result != IDYES)
         return;
 
     stop_tunnel();
     if (!DeleteFileW(path.c_str())) {
-        MessageBoxW(hwnd, L"Failed to delete tunnel config.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_DELETE_CONFIG).c_str(), L"wgx", MB_ICONERROR);
         return;
     }
     load_tunnels();
@@ -1677,7 +1727,7 @@ static void edit_tunnel(HWND hwnd)
     std::wstring params = L"\"" + t->path + L"\"";
     HINSTANCE result = ShellExecuteW(hwnd, L"open", L"notepad.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
     if ((INT_PTR)result <= 32)
-        MessageBoxW(hwnd, L"Failed to open tunnel config.", L"wgx", MB_ICONERROR);
+        MessageBoxW(hwnd, tr(IDS_FAILED_OPEN_CONFIG).c_str(), L"wgx", MB_ICONERROR);
 }
 
 static void append_owner_draw_menu_item(HMENU menu, UINT id, OwnerDrawMenuItem *data)
@@ -1712,10 +1762,11 @@ static bool is_context_menu_item(const DRAWITEMSTRUCT *item)
 static void measure_context_menu_item(HWND hwnd, MEASUREITEMSTRUCT *item)
 {
     OwnerDrawMenuItem *data = (OwnerDrawMenuItem *)item->itemData;
+    std::wstring text = tr(data->text_id);
     HDC dc = GetDC(hwnd);
     HFONT old_font = (HFONT)SelectObject(dc, g_ui_font);
     SIZE text_size{};
-    GetTextExtentPoint32W(dc, data->text, (int)wcslen(data->text), &text_size);
+    GetTextExtentPoint32W(dc, text.c_str(), (int)text.size(), &text_size);
     SelectObject(dc, old_font);
     ReleaseDC(hwnd, dc);
 
@@ -1728,6 +1779,7 @@ static void measure_context_menu_item(HWND hwnd, MEASUREITEMSTRUCT *item)
 static void draw_context_menu_item(const DRAWITEMSTRUCT *item)
 {
     OwnerDrawMenuItem *data = (OwnerDrawMenuItem *)item->itemData;
+    std::wstring item_text = tr(data->text_id);
     bool selected = (item->itemState & ODS_SELECTED) != 0;
     COLORREF bg = GetSysColor(selected ? COLOR_HIGHLIGHT : COLOR_MENU);
     COLORREF text = GetSysColor(selected ? COLOR_HIGHLIGHTTEXT : COLOR_MENUTEXT);
@@ -1769,7 +1821,7 @@ static void draw_context_menu_item(const DRAWITEMSTRUCT *item)
     SetBkMode(item->hDC, TRANSPARENT);
     SetTextColor(item->hDC, text);
     HFONT old_font = (HFONT)SelectObject(item->hDC, g_ui_font);
-    DrawTextW(item->hDC, data->text, -1, &text_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+    DrawTextW(item->hDC, item_text.c_str(), -1, &text_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
     SelectObject(item->hDC, old_font);
 }
 
@@ -1800,7 +1852,8 @@ static void draw_empty_import_button(const DRAWITEMSTRUCT *item)
     SetBkMode(item->hDC, TRANSPARENT);
     SetTextColor(item->hDC, text);
     HFONT old_font = (HFONT)SelectObject(item->hDC, g_ui_font);
-    DrawTextW(item->hDC, L"Import Tunnel", -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+    std::wstring label = tr(IDS_IMPORT_TUNNEL);
+    DrawTextW(item->hDC, label.c_str(), -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
     SelectObject(item->hDC, old_font);
 }
 
@@ -1812,8 +1865,8 @@ static void show_tunnel_context_menu(HWND list, int index, POINT screen_pt)
     ListView_SetItemState(list, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     refresh_detail();
 
-    OwnerDrawMenuItem edit_item{ L"Edit", SIID_INVALID, IDI_MENU_EDIT, false };
-    OwnerDrawMenuItem delete_item{ L"Delete", SIID_INVALID, IDI_MENU_REMOVE, false };
+    OwnerDrawMenuItem edit_item{ IDS_EDIT, SIID_INVALID, IDI_MENU_EDIT, false };
+    OwnerDrawMenuItem delete_item{ IDS_DELETE, SIID_INVALID, IDI_MENU_REMOVE, false };
     HMENU menu = CreatePopupMenu();
     append_owner_draw_menu_item(menu, ID_EDIT, &edit_item);
     append_owner_draw_menu_item(menu, ID_DELETE, &delete_item);
@@ -1918,8 +1971,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         ListView_InsertColumn(g_list, 0, &col);
         recreate_status_images();
         g_path = value(hwnd, 0, 0, 0, 0);
-        g_toggle_button = button(hwnd, L"Start", ID_TOGGLE_TUNNEL);
-        g_empty_import_button = rounded_button(hwnd, L"Import Tunnel", ID_IMPORT_BUTTON);
+        g_toggle_button = button(hwnd, tr(IDS_START).c_str(), ID_TOGGLE_TUNNEL);
+        g_empty_import_button = rounded_button(hwnd, tr(IDS_IMPORT_TUNNEL).c_str(), ID_IMPORT_BUTTON);
         g_address = value(hwnd, 0, 0, 0, 0);
         g_dns = value(hwnd, 0, 0, 0, 0);
         g_peer = value(hwnd, 0, 0, 0, 0);
@@ -1983,7 +2036,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         HFONT old_font = (HFONT)SelectObject(dc, g_sidebar_title_font);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-        DrawTextW(dc, L"Tunnels", -1, &sidebar_title, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+        std::wstring sidebar_text = tr(IDS_TUNNELS);
+        DrawTextW(dc, sidebar_text.c_str(), -1, &sidebar_title, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
         SelectObject(dc, old_font);
 
         int detail_x = g_sidebar_width + scale_px(kSplitterWidth) + scale_px(18);
@@ -2004,18 +2058,20 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
             int label_y = scale_px(104);
             int label_row = scale_px(34);
-            const wchar_t *detail_labels[] = { L"Interface", L"DNS", L"Peer", L"Endpoint", L"Allowed IPs" };
+            UINT detail_labels[] = { IDS_INTERFACE, IDS_DNS, IDS_PEER, IDS_ENDPOINT, IDS_ALLOWED_IPS };
             HFONT old_detail_font = (HFONT)SelectObject(dc, g_ui_font);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-            for (const wchar_t *text : detail_labels) {
+            for (UINT text_id : detail_labels) {
+                std::wstring text = tr(text_id);
                 RECT label_rc{ detail_x, label_y, detail_x + scale_px(120), label_y + scale_px(24) };
-                DrawTextW(dc, text, -1, &label_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+                DrawTextW(dc, text.c_str(), -1, &label_rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
                 label_y += label_row;
             }
             int transfer_y = label_y + scale_px(14);
             RECT transfer_label{ detail_x, transfer_y, detail_x + scale_px(120), transfer_y + scale_px(24) };
-            DrawTextW(dc, L"Transfer", -1, &transfer_label, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+            std::wstring transfer_text = tr(IDS_TRANSFER);
+            DrawTextW(dc, transfer_text.c_str(), -1, &transfer_label, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
 
             TunnelProfile *t = selected_tunnel();
             std::wstring tx = L"\u2191 " + format_bytes(t ? t->tx_bytes : 0);
@@ -2192,6 +2248,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             DeleteObject(g_status_dot_stopped);
         if (g_status_dot_running)
             DeleteObject(g_status_dot_running);
+        if (g_wg_off_icon)
+            DestroyIcon(g_wg_off_icon);
+        if (g_wg_on_icon)
+            DestroyIcon(g_wg_on_icon);
+        if (g_wg_connecting_icon)
+            DestroyIcon(g_wg_connecting_icon);
         PostQuitMessage(0);
         return 0;
     }
@@ -2214,7 +2276,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
 
-    g_main_window = CreateWindowW(wc.lpszClassName, L"wgx for Windows",
+    g_main_window = CreateWindowW(wc.lpszClassName, tr(IDS_APP_TITLE).c_str(),
                                   WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                                   980, 640, nullptr, nullptr, instance, nullptr);
     ShowWindow(g_main_window, show);

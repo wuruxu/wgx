@@ -1,25 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
+
 <svg
-   xmlns:dc="http://purl.org/dc/elements/1.1/"
-   xmlns:cc="http://creativecommons.org/ns#"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-   xmlns:svg="http://www.w3.org/2000/svg"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:xlink="http://www.w3.org/1999/xlink"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    width="48"
    height="48"
    id="svg2"
    sodipodi:version="0.32"
-   inkscape:version="0.46+devel"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
    version="1.0"
-   sodipodi:docname="user-offline.svg"
+   sodipodi:docname="wg-off.svg"
    inkscape:export-filename="/home/hbons/GUI/Tango/Gaim Refresh/status/32/offline.png"
    inkscape:export-xdpi="90"
    inkscape:export-ydpi="90"
-   inkscape:output_extension="org.inkscape.output.svg.inkscape">
+   inkscape:output_extension="org.inkscape.output.svg.inkscape"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
   <defs
      id="defs4">
     <filter
@@ -37,10 +38,10 @@
     <filter
        inkscape:collect="always"
        id="filter10591"
-       x="-0.29381531"
-       width="1.5876306"
-       y="-0.24673747"
-       height="1.4934748">
+       x="-0.27815383"
+       width="1.5563077"
+       y="-0.26713784"
+       height="1.5342757">
       <feGaussianBlur
          inkscape:collect="always"
          stdDeviation="0.43251839"
@@ -144,21 +145,30 @@
      inkscape:pageopacity="0.0"
      inkscape:pageshadow="2"
      inkscape:zoom="8.488013"
-     inkscape:cx="12.937267"
-     inkscape:cy="16.23765"
+     inkscape:cx="12.959452"
+     inkscape:cy="16.258222"
      inkscape:document-units="px"
      inkscape:current-layer="layer1"
      showgrid="true"
      fill="#888a85"
-     inkscape:window-width="1440"
-     inkscape:window-height="849"
-     inkscape:window-x="317"
-     inkscape:window-y="122">
+     inkscape:window-width="1078"
+     inkscape:window-height="775"
+     inkscape:window-x="26"
+     inkscape:window-y="23"
+     inkscape:showpageshadow="2"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:window-maximized="0">
     <inkscape:grid
        type="xygrid"
        id="grid6336"
        visible="true"
-       enabled="true" />
+       enabled="true"
+       originx="0"
+       originy="0"
+       spacingy="1"
+       spacingx="1"
+       units="px" />
   </sodipodi:namedview>
   <metadata
      id="metadata7">
@@ -216,17 +226,5 @@
        id="path9829"
        style="fill:url(#radialGradient9837);fill-opacity:1;stroke:none;stroke-width:0.51155168;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;display:inline;enable-background:new"
        sodipodi:type="arc" />
-    <path
-       style="fill:#ffffff;fill-opacity:1;stroke:#555753;stroke-width:1.00000036;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;display:inline;enable-background:new"
-       d="M 33.66749,12.109112 C 31.99906,10.446002 30.17036,9.8112175 28.50195,11.474326 L 23.48262,16.47762 L 18.4633,11.474326 C 16.79487,9.8112175 14.85773,10.658597 13.1893,12.321721 C 11.52086,13.984831 10.77167,15.815176 12.44011,17.478286 L 17.45944,22.48159 L 12.44011,27.48492 C 10.77167,29.148 11.51416,31.2804 13.1826,32.94351 C 14.85099,34.6066 16.79487,35.15199 18.4633,33.48889 L 23.48262,28.48557 L 28.50195,33.48889 C 30.17036,35.15199 32.21263,34.61583 33.88104,32.95273 C 35.54947,31.28964 36.19355,29.148 34.5251,27.48492 L 29.50581,22.48159 L 34.5251,17.478286 C 36.19355,15.815176 35.33588,13.772176 33.66749,12.109112 z"
-       id="path9454"
-       sodipodi:nodetypes="ccccscccscccscccc" />
-    <rect
-       style="fill:#ffffff;fill-opacity:1;stroke:none;display:inline;enable-background:new"
-       id="rect9456"
-       width="11.000001"
-       height="11"
-       x="17.999998"
-       y="17" />
   </g>
 </svg>
