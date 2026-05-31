@@ -14,6 +14,9 @@
 #define TCP_WORKER_LOG_STEP    256
 #define TCP_WORKER_BATCH_LIMIT 128
 
+_Static_assert((TCP_WORKER_QUEUE_CAP & (TCP_WORKER_QUEUE_CAP - 1)) == 0,
+               "TCP_WORKER_QUEUE_CAP must be a power of two");
+
 typedef struct packet_msg {
     struct packet_msg *next;
     size_t             len;
@@ -208,7 +211,7 @@ static int ring_push(tcp_worker_t *worker, packet_ring_t *ring,
         return -1;
     }
 
-    size_t idx = (ring->head + ring->len) % TCP_WORKER_QUEUE_CAP;
+    size_t idx = (ring->head + ring->len) & (TCP_WORKER_QUEUE_CAP - 1);
     *was_empty = (ring->len == 0);
     ring->slots[idx] = msg;
     ring->len++;
@@ -226,7 +229,7 @@ static packet_msg_t *ring_pop(packet_ring_t *ring) {
 
     packet_msg_t *msg = ring->slots[ring->head];
     ring->slots[ring->head] = NULL;
-    ring->head = (ring->head + 1) % TCP_WORKER_QUEUE_CAP;
+    ring->head = (ring->head + 1) & (TCP_WORKER_QUEUE_CAP - 1);
     ring->len--;
     ring->dequeued++;
     return msg;
