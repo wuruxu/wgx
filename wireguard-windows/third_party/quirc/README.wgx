@@ -1,0 +1,12 @@
+quirc QR-code recognition library
+
+Source: https://github.com/dlbeer/quirc
+Files vendored for wgx Windows UI:
+- lib/quirc.h
+- lib/quirc_internal.h
+- lib/quirc.c
+- lib/identify.c
+- lib/decode.c
+- lib/version_db.c
+
+License: ISC-style license included in each source file header.

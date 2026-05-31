@@ -1,0 +1,16 @@
+#include <windows.h>
+#include "resource.h"
+
+IDI_WGX_APP        ICON "wgx-app.ico"
+IDI_SYSTRAY_UNLOCK ICON "systray-unlock.ico"
+IDI_SYSTRAY_LOCK   ICON "systray-lock.ico"
+IDI_IMPORT_FROM_QR ICON "import-from-qr.ico"
+IDI_MENU_ADD       ICON "menu-add.ico"
+IDI_MENU_EDIT      ICON "menu-edit.ico"
+IDI_MENU_EXIT      ICON "menu-exit.ico"
+IDI_MENU_REMOVE    ICON "menu-remove.ico"
+IDI_WG_OFF         ICON "wg-off.ico"
+IDI_WG_ON          ICON "wg-on.ico"
+IDI_WG_CONNECTING  ICON "wg-connecting.ico"
+
+1 RT_MANIFEST "wgx-ui.manifest"
