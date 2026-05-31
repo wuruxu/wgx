@@ -211,6 +211,10 @@
 
 "alertScanQRCodeUnreadableQRCodeTitle" = "Invalid Code";
 "alertScanQRCodeUnreadableQRCodeMessage" = "The scanned code could not be read";
+"alertScanQRCodeScreenCaptureCancelledTitle" = "QR Code Import Cancelled";
+"alertScanQRCodeScreenCaptureCancelledMessage" = "No screen area was selected.";
+"alertScanQRCodeScreenCaptureFailedTitle" = "Unable to Capture Screen";
+"alertScanQRCodeScreenCaptureFailedMessage" = "Select the QR code area again. macOS may also require screen recording permission for this app.";
 
 "alertScanQRCodeNamePromptTitle" = "Please name the scanned tunnel";
 
@@ -315,6 +319,7 @@
 "macMenuManageTunnels" = "Manage Tunnels";
 "macMenuImportTunnels" = "Import Tunnel(s) from File…";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "Import Tunnel from QR Code…";
 "macMenuViewLog" = "View Log";
 "macMenuExportTunnels" = "Export Tunnels to Zip…";
 "macMenuAbout" = "About wgx";

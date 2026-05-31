@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "Tünelleri Yönet";
 "macMenuImportTunnels" = "Tünelleri Dosyadan İçe Aktar…";
 "macMenuAddEmptyTunnel" = "Boş Tünel Ekle…";
+"macMenuImportTunnelFromQRCode" = "Tüneli QR Kodundan İçe Aktar…";
 "macMenuViewLog" = "Günlüğü Görüntüle";
 "macMenuExportTunnels" = "Tünelleri Zip'e Aktar…";
 "macMenuAbout" = "wgx Hakkında";

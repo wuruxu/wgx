@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "Gestionare tuneluri";
 "macMenuImportTunnels" = "Importare tunel(uri) din fișier…";
 "macMenuAddEmptyTunnel" = "Adăugare tunel gol…";
+"macMenuImportTunnelFromQRCode" = "Importare tunel din cod QR…";
 "macMenuViewLog" = "Vizualizare jurnal";
 "macMenuExportTunnels" = "Exportare tuneluri în zip…";
 "macMenuAbout" = "Despre wgx";

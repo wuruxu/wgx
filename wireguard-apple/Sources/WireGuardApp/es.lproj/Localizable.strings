@@ -368,6 +368,7 @@
 "alertTunnelNameEmptyMessage" = "Cannot create tunnel with an empty name";
 "alertTunnelNameEmptyTitle" = "No name provided";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "Importar túnel desde código QR…";
 "macViewPrivateData" = "view tunnel private keys";
 "alertTunnelActivationErrorTunnelIsNotInactiveTitle" = "Activation in progress";
 "macAppExitingWithActiveTunnelInfo" = "The tunnel will remain active after exiting. You may disable it by reopening this application or through the Network panel in System Preferences.";

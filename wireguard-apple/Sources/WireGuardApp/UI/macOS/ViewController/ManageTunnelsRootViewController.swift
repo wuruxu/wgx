@@ -139,6 +139,7 @@ extension ManageTunnelsRootViewController {
         switch action {
         case #selector(TunnelsListTableViewController.handleViewLogAction),
              #selector(TunnelsListTableViewController.handleAddEmptyTunnelAction),
+             #selector(TunnelsListTableViewController.handleImportTunnelFromQRCodeAction),
              #selector(TunnelsListTableViewController.handleImportTunnelAction),
              #selector(TunnelsListTableViewController.handleExportTunnelsAction),
              #selector(TunnelsListTableViewController.handleRemoveTunnelAction):

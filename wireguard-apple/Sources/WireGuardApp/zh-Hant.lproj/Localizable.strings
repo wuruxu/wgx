@@ -136,6 +136,7 @@
 "tunnelOnDemandExceptTheseSSIDs" = "Except these SSIDs";
 "alertUnableToWriteLogMessage" = "Unable to write logs to file";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "從 QR 碼匯入隧道…";
 "alertInvalidInterfaceTitle" = "Invalid interface";
 "macDeleteTunnelConfirmationAlertButtonTitleDelete" = "Delete";
 "alertTunnelActivationFailureTitle" = "Activation failure";

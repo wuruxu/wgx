@@ -251,6 +251,7 @@
 "macMenuManageTunnels" = "Hallitse tunneleita";
 "macMenuImportTunnels" = "Tuo tunneli(t) tiedostosta…";
 "macMenuAddEmptyTunnel" = "Lisää tyhjä tunneli…";
+"macMenuImportTunnelFromQRCode" = "Tuo tunneli QR-koodista…";
 "macMenuViewLog" = "Näytä loki";
 "macMenuExportTunnels" = "Vie tunnelit Zippinä…";
 "macMenuAbout" = "Tietoa wgxista";

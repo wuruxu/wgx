@@ -141,6 +141,7 @@
 "alertUnableToWriteLogMessage" = "Unable to write logs to file";
 "macMenuQuit" = "Quit wgx";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
+"macMenuImportTunnelFromQRCode" = "Impor Tunnel dari Kode QR…";
 "alertInvalidInterfaceTitle" = "Invalid interface";
 "macDeleteTunnelConfirmationAlertButtonTitleDelete" = "Delete";
 "alertTunnelActivationFailureTitle" = "Activation failure";

@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "ਟਨਲ ਦਾ ਇੰਤਜ਼ਾਮ ਕਰੋ";
 "macMenuImportTunnels" = "ਫ਼ਾਇਲ ਤੋਂ ਟਨਲ ਦਰਾਮਦ ਕਰੋ…";
 "macMenuAddEmptyTunnel" = "…ਖਾਲੀ ਟਨਲ ਜੋੜੋ";
+"macMenuImportTunnelFromQRCode" = "QR ਕੋਡ ਤੋਂ ਟਨਲ ਦਰਾਮਦ ਕਰੋ…";
 "macMenuViewLog" = "ਲਾਗ ਵੇਖੋ";
 "macMenuExportTunnels" = "ਟਨਲ ਨੂੰ ਜ਼ਿੱਪ ਵਜੋਂ ਬਰਾਮਦ ਕਰੋ…";
 "macMenuAbout" = "ਵਾਇਰਗਾਰਡ ਬਾਰੇ";

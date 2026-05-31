@@ -298,6 +298,7 @@
 "macMenuManageTunnels" = "Upravljaj tunele";
 "macMenuImportTunnels" = "Uvozi tunele iz datoteke …";
 "macMenuAddEmptyTunnel" = "Dodaj prazen tunel …";
+"macMenuImportTunnelFromQRCode" = "Uvozi tunel iz kode QR …";
 "macMenuViewLog" = "Pokaži dnevnik";
 "macMenuExportTunnels" = "Izvozi tunele v datoteko zip …";
 "macMenuAbout" = "O aplikaciji wgx";
