@@ -164,6 +164,7 @@ typedef struct {
 /* ---- Index table entry ---- */
 typedef struct {
     enum { IDX_HANDSHAKE, IDX_KEYPAIR } type;
+    uint32_t           index;
     struct wg_peer    *peer;
     wg_handshake_t    *handshake;
     wg_keypair_t      *keypair;
@@ -171,8 +172,10 @@ typedef struct {
 
 /* ---- Index table ---- */
 #define INDEX_TABLE_SIZE    65536
+#define INDEX_LOCK_SHARDS   1024
 typedef struct {
-    pthread_mutex_t mutex;
+    pthread_mutex_t alloc_lock;
+    pthread_mutex_t locks[INDEX_LOCK_SHARDS];
     index_entry_t   entries[INDEX_TABLE_SIZE];
     uint8_t         occupied[INDEX_TABLE_SIZE];
 } index_table_t;

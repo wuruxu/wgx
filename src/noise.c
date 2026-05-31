@@ -83,79 +83,124 @@ void noise_handshake_clear(wg_handshake_t *hs) {
 }
 
 /* ---- Index table ---- */
+static inline uint32_t index_slot(uint32_t idx) {
+    return idx & (INDEX_TABLE_SIZE - 1);
+}
+
+static inline pthread_mutex_t *index_slot_lock(index_table_t *t, uint32_t slot) {
+    return &t->locks[slot & (INDEX_LOCK_SHARDS - 1)];
+}
+
 void index_table_init(index_table_t *t) {
-    pthread_mutex_init(&t->mutex, NULL);
+    pthread_mutex_init(&t->alloc_lock, NULL);
+    for (uint32_t i = 0; i < INDEX_LOCK_SHARDS; i++)
+        pthread_mutex_init(&t->locks[i], NULL);
     memset(t->occupied, 0, sizeof(t->occupied));
 }
 
 void index_table_free(index_table_t *t) {
-    pthread_mutex_destroy(&t->mutex);
+    for (uint32_t i = 0; i < INDEX_LOCK_SHARDS; i++)
+        pthread_mutex_destroy(&t->locks[i]);
+    pthread_mutex_destroy(&t->alloc_lock);
 }
 
 static uint32_t pick_random_index(index_table_t *t) {
     uint32_t idx;
-    do {
+    for (unsigned int attempts = 0; attempts < 4096; attempts++) {
         wg_random_bytes((uint8_t *)&idx, sizeof(idx));
-        idx &= (INDEX_TABLE_SIZE - 1);
-    } while (t->occupied[idx]);
-    return idx;
+        if (idx && !t->occupied[index_slot(idx)])
+            return idx;
+    }
+
+    for (uint32_t slot = 0; slot < INDEX_TABLE_SIZE; slot++) {
+        if (t->occupied[slot])
+            continue;
+        wg_random_bytes((uint8_t *)&idx, sizeof(idx));
+        idx &= ~(uint32_t)(INDEX_TABLE_SIZE - 1);
+        idx |= slot;
+        if (!idx)
+            idx = INDEX_TABLE_SIZE;
+        return idx;
+    }
+
+    return 0;
 }
 
 uint32_t index_table_new_for_handshake(index_table_t *t,
                                         wg_peer_t *peer,
                                         wg_handshake_t *hs) {
-    pthread_mutex_lock(&t->mutex);
+    pthread_mutex_lock(&t->alloc_lock);
     uint32_t idx = pick_random_index(t);
-    t->occupied[idx] = 1;
-    t->entries[idx].type      = IDX_HANDSHAKE;
-    t->entries[idx].peer      = peer;
-    t->entries[idx].handshake = hs;
-    t->entries[idx].keypair   = NULL;
-    pthread_mutex_unlock(&t->mutex);
+    if (idx) {
+        uint32_t slot = index_slot(idx);
+        pthread_mutex_t *lock = index_slot_lock(t, slot);
+        pthread_mutex_lock(lock);
+        t->occupied[slot] = 1;
+        t->entries[slot].type      = IDX_HANDSHAKE;
+        t->entries[slot].index     = idx;
+        t->entries[slot].peer      = peer;
+        t->entries[slot].handshake = hs;
+        t->entries[slot].keypair   = NULL;
+        pthread_mutex_unlock(lock);
+    }
+    pthread_mutex_unlock(&t->alloc_lock);
     return idx;
 }
 
 uint32_t index_table_new_for_keypair(index_table_t *t,
                                       wg_peer_t *peer,
                                       wg_keypair_t *kp) {
-    pthread_mutex_lock(&t->mutex);
+    pthread_mutex_lock(&t->alloc_lock);
     uint32_t idx = pick_random_index(t);
-    t->occupied[idx] = 1;
-    t->entries[idx].type      = IDX_KEYPAIR;
-    t->entries[idx].peer      = peer;
-    t->entries[idx].handshake = NULL;
-    t->entries[idx].keypair   = kp;
-    pthread_mutex_unlock(&t->mutex);
+    if (idx) {
+        uint32_t slot = index_slot(idx);
+        pthread_mutex_t *lock = index_slot_lock(t, slot);
+        pthread_mutex_lock(lock);
+        t->occupied[slot] = 1;
+        t->entries[slot].type      = IDX_KEYPAIR;
+        t->entries[slot].index     = idx;
+        t->entries[slot].peer      = peer;
+        t->entries[slot].handshake = NULL;
+        t->entries[slot].keypair   = kp;
+        pthread_mutex_unlock(lock);
+    }
+    pthread_mutex_unlock(&t->alloc_lock);
     return idx;
 }
 
 index_entry_t *index_table_lookup(index_table_t *t, uint32_t idx) {
-    idx &= (INDEX_TABLE_SIZE - 1);
-    pthread_mutex_lock(&t->mutex);
-    index_entry_t *e = t->occupied[idx] ? &t->entries[idx] : NULL;
-    pthread_mutex_unlock(&t->mutex);
+    uint32_t slot = index_slot(idx);
+    pthread_mutex_t *lock = index_slot_lock(t, slot);
+    pthread_mutex_lock(lock);
+    index_entry_t *e = (t->occupied[slot] && t->entries[slot].index == idx) ?
+                       &t->entries[slot] : NULL;
+    pthread_mutex_unlock(lock);
     return e;
 }
 
 void index_table_delete(index_table_t *t, uint32_t idx) {
     if (!idx) return;
-    idx &= (INDEX_TABLE_SIZE - 1);
-    pthread_mutex_lock(&t->mutex);
-    t->occupied[idx] = 0;
-    memset(&t->entries[idx], 0, sizeof(t->entries[idx]));
-    pthread_mutex_unlock(&t->mutex);
+    uint32_t slot = index_slot(idx);
+    pthread_mutex_t *lock = index_slot_lock(t, slot);
+    pthread_mutex_lock(lock);
+    if (t->occupied[slot] && t->entries[slot].index == idx) {
+        t->occupied[slot] = 0;
+        memset(&t->entries[slot], 0, sizeof(t->entries[slot]));
+    }
+    pthread_mutex_unlock(lock);
 }
 
 void index_table_swap_keypair(index_table_t *t, uint32_t old_idx, wg_keypair_t *kp) {
     if (!old_idx) return;
-    old_idx &= (INDEX_TABLE_SIZE - 1);
-    pthread_mutex_lock(&t->mutex);
-    if (t->occupied[old_idx]) {
-        t->entries[old_idx].type    = IDX_KEYPAIR;
-        t->entries[old_idx].keypair = kp;
+    uint32_t slot = index_slot(old_idx);
+    pthread_mutex_t *lock = index_slot_lock(t, slot);
+    pthread_mutex_lock(lock);
+    if (t->occupied[slot] && t->entries[slot].index == old_idx) {
+        t->entries[slot].type    = IDX_KEYPAIR;
+        t->entries[slot].keypair = kp;
         kp->local_index = old_idx;
     }
-    pthread_mutex_unlock(&t->mutex);
+    pthread_mutex_unlock(lock);
 }
 
 /* ---- Cookie / MAC ---- */
@@ -395,6 +440,8 @@ int noise_create_initiation(wg_device_t *dev, wg_peer_t *peer,
     /* Assign sender index */
     index_table_delete(&dev->index_table, hs->local_index);
     uint32_t sender = index_table_new_for_handshake(&dev->index_table, peer, hs);
+    if (!sender)
+        goto fail;
     msg->sender = wg_cpu_to_le32(sender);
     hs->local_index = sender;
 
@@ -543,6 +590,8 @@ int noise_create_response(wg_device_t *dev, wg_peer_t *peer,
     /* Generate new sender index */
     index_table_delete(&dev->index_table, hs->local_index);
     hs->local_index = index_table_new_for_handshake(&dev->index_table, peer, hs);
+    if (!hs->local_index)
+        goto fail;
 
     msg->type     = wg_cpu_to_le32(MSG_RESPONSE);
     msg->sender   = wg_cpu_to_le32(hs->local_index);
