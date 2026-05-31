@@ -5,7 +5,7 @@ wgx is a high-performance WireGuard client in userspace. It supports both a
 local SOCKS5 proxy mode and a TUN-device mode that is compatible with the
 standard `wireguard-go`/`wg` userspace workflow.
 
-`wgx` has also been ported to Android and macOS. Prebuilt app releases are
+`wgx` has also been ported to Windows, macOS and Android. Prebuilt app releases are
 available from the project Releases page.
 
 It is inspired by [wireproxy](https://github.com/windtf/wireproxy), but takes a different implementation path: `wgx` is written in C, built on [libuv](https://libuv.org/), and implements WireGuard and a TCP forwarding path in userspace with performance as the first priority.
